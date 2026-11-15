@@ -1,7 +1,6 @@
 //! Las operaciones de revelado.
 
-use pf_image::{Imagen, color};
-use rayon::prelude::*;
+use pf_image::Imagen;
 
 /// Una operación de revelado con sus parámetros.
 ///
@@ -15,11 +14,42 @@ use rayon::prelude::*;
 #[serde(tag = "clase", rename_all = "lowercase")]
 pub enum Operacion {
     /// Pasos de exposición (EV). Cada paso es el doble de luz.
+    ///
+    /// Es una multiplicación y nada más, y esa sencillez es el argumento
+    /// entero a favor de trabajar en lineal: un paso de exposición es el
+    /// doble de fotones, y en lineal el doble de fotones es el doble de
+    /// número. En sRGB habría que deshacer la curva, multiplicar y volver a
+    /// ponerla, tres veces por píxel y por canal.
+    ///
+    /// No se recorta por arriba a propósito: un valor de 1,8 después de subir
+    /// la exposición sigue siendo un dato, y bajar el contraste después puede
+    /// devolverlo al rango visible. El recorte ocurre solo al pintar o al
+    /// exportar.
     Exposicion { pasos: f32 },
     /// Contraste, de -100 a +100. El 0 no toca nada.
+    ///
+    /// # Por qué el contraste NO se aplica en lineal
+    ///
+    /// Es la excepción a la regla de la casa, y tiene motivo. En luz lineal,
+    /// el gris medio está en 0,18 y las sombras se amontonan todas por debajo
+    /// de 0,05: estirar alrededor de 0,18 mueve muchísimo las luces y casi
+    /// nada las sombras, así que el primer 20 % del deslizador no parecería
+    /// hacer nada y el último 20 % quemaría el cielo. El deslizador tiene que
+    /// sentirse parejo.
+    ///
+    /// Así que se aplica sobre el valor perceptual —el mismo que vería la
+    /// pantalla—, con el pivote en 0,5, y el resultado se devuelve a lineal
+    /// para que las operaciones siguientes sigan trabajando con luz. Las
+    /// conversiones se extienden fuera de 0..1 sin recortar: un 1,3 que entra
+    /// sale por el otro lado en vez de quedarse pegado al blanco.
     Contraste { cantidad: f32 },
     /// Dobla las luces en vez de cortarlas. Es una casilla, no un
     /// deslizador.
+    ///
+    /// Se aplica canal a canal y no sobre la luminancia a propósito:
+    /// comprimir los tres canales por igual mantiene el tono, mientras que
+    /// comprimir solo la luminancia dejaría los canales que ya iban pasados
+    /// por encima de los otros y teñiría las luces.
     ///
     /// Por qué sin deslizador: lo único que se podría regular es dónde
     /// empieza el codo, y eso es una decisión que nadie puede juzgar mirando
@@ -90,84 +120,30 @@ impl Operacion {
 ///
 /// Recibe la imagen ya muestreada al tamaño de la vista, no la original: ver
 /// `pf_image::muestreo` para el porqué.
+///
+/// # Por qué esto no es un bucle por operación
+///
+/// Lo era, y no aguantaba. Cada operación recorría la imagen entera por su
+/// cuenta, y lo que cuesta de verdad no son las multiplicaciones sino cuántas
+/// veces se va y se vuelve de la memoria: una vista de 1.600 × 900 en RGB de
+/// `f32` son 17 MB por pasada. Con tres operaciones se iban unos 12 ms solo en
+/// eso; con los nueve controles que vienen serían cinco pasadas y el cuadro se
+/// saldría de los 33 ms, o sea por debajo de los 30 cuadros por segundo de los
+/// que presume el proyecto.
+///
+/// Ahora la lista se resuelve PRIMERO —en [`crate::plan::Plan`]— y se ejecuta
+/// en una sola pasada, estén movidos tres deslizadores o nueve.
+///
+/// Lo que cada operación hace y por qué está en el comentario de su variante,
+/// aquí arriba; lo que hace falta para componerlas, en `plan.rs`.
 pub fn aplicar(operaciones: &[Operacion], img: &mut Imagen) {
-    for op in operaciones {
-        if op.es_neutra() {
-            continue;
-        }
-        match *op {
-            Operacion::Exposicion { pasos } => exposicion(img, pasos),
-            Operacion::Contraste { cantidad } => contraste(img, cantidad),
-            Operacion::CurvaDeTono { .. } => curva_de_tono(img),
-        }
-    }
-}
-
-/// Exposición: multiplicar la luz.
-///
-/// Esto es una multiplicación y nada más, y esa sencillez es el argumento
-/// entero a favor de trabajar en lineal. Un paso de exposición es el doble de
-/// fotones, y en lineal el doble de fotones es el doble de número. En sRGB
-/// habría que deshacer la curva, multiplicar y volver a ponerla, tres veces
-/// por píxel y por canal.
-///
-/// No se recorta por arriba a propósito: un valor de 1,8 después de subir la
-/// exposición sigue siendo un dato, y bajar el contraste después puede
-/// devolverlo al rango visible. El recorte ocurre solo al pintar o al
-/// exportar.
-fn exposicion(img: &mut Imagen, pasos: f32) {
-    let factor = 2.0f32.powf(pasos);
-    img.datos_mut().par_chunks_mut(4096).for_each(|trozo| {
-        for v in trozo {
-            *v *= factor;
-        }
-    });
-}
-
-/// Curva de tono: doblar las luces en vez de cortarlas.
-///
-/// Todo el razonamiento está en [`pf_image::color::doblar_luces`]; aquí solo
-/// se recorre la imagen. Se aplica canal a canal y no sobre la luminancia a
-/// propósito: comprimir los tres canales por igual mantiene el tono, mientras
-/// que comprimir solo la luminancia dejaría los canales que ya iban pasados
-/// por encima de los otros y teñiría las luces.
-fn curva_de_tono(img: &mut Imagen) {
-    img.datos_mut().par_chunks_mut(4096).for_each(|trozo| {
-        for v in trozo {
-            *v = color::doblar_luces(*v);
-        }
-    });
-}
-
-/// Contraste: separar o juntar los tonos alrededor del gris medio.
-///
-/// # Por qué el contraste NO se aplica en lineal
-///
-/// Es la excepción a la regla de la casa, y tiene motivo. En luz lineal, el
-/// gris medio está en 0,18 y las sombras se amontonan todas por debajo de
-/// 0,05: estirar alrededor de 0,18 mueve muchísimo las luces y casi nada las
-/// sombras, así que el primer 20 % del deslizador no parece hacer nada y el
-/// último 20 % quema el cielo. El deslizador tiene que sentirse parejo.
-///
-/// Así que el contraste se aplica sobre el valor perceptual —el mismo que
-/// vería la pantalla—, con el pivote en 0,5, y el resultado se devuelve a
-/// lineal para que las operaciones siguientes sigan trabajando con luz.
-///
-/// Las conversiones se extienden fuera de 0..1 sin recortar: un valor de 1,3
-/// que entra sale del otro lado, en vez de quedarse pegado al blanco.
-fn contraste(img: &mut Imagen, cantidad: f32) {
-    let k = 1.0 + cantidad.clamp(-100.0, 100.0) / 100.0;
-    img.datos_mut().par_chunks_mut(4096).for_each(|trozo| {
-        for v in trozo {
-            let s = color::lineal_a_srgb(*v);
-            *v = color::srgb_a_lineal((s - 0.5) * k + 0.5);
-        }
-    });
+    crate::plan::Plan::desde(operaciones).ejecutar(img);
 }
 
 #[cfg(test)]
 mod pruebas {
     use super::*;
+    use pf_image::color;
     use pf_core::Dimensiones;
     use pf_image::CANALES;
 

@@ -21,6 +21,7 @@
 //! paga el precio completo.
 
 pub mod operacion;
+mod plan;
 
 use std::path::{Path, PathBuf};
 

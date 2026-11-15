@@ -320,6 +320,38 @@ sitio y no pueden separarse. El atajo se declara en CAMPOS y no en una cadena
 `"Ctrl+E"`: un mini-lenguaje con su analizador es justo la infraestructura que
 este proyecto evita.
 
+### El revelado se resuelve primero y se ejecuta en una sola pasada
+
+Lo evidente es que cada operación recorra la imagen y haga lo suyo: un bucle,
+una operación, fácil de leer. Era así, y no aguantaba.
+
+La cuenta que importa no son las multiplicaciones: es **cuántas veces se
+recorre la memoria**. Una vista de 1.600 × 900 en RGB de `f32` son 17 MB, así
+que cada pasada mueve 17 de lectura más 17 de escritura. Con tres operaciones
+se iban unos 12 ms solo en ir y venir; con los nueve controles que vienen
+serían cinco pasadas y el cuadro se saldría de los 33 ms, o sea **por debajo
+de los 30 cuadros por segundo de los que presume este README**.
+
+Ahora la lista se resuelve antes de tocar un píxel —en `pf-document/plan.rs`—
+y se ejecuta en una sola pasada, estén movidos tres deslizadores o nueve. La
+curva de contraste, que es la única con `powf`, se tabula; la exposición no,
+porque es una multiplicación y porque tabularla malgastaría la resolución de
+la tabla cuando la exposición es alta. Resultado medido: **de 28 ms a 13 por
+cuadro**, con las mismas operaciones.
+
+Esto tiene un precio y conviene reconocerlo: el código deja de leerse como
+«un bucle, una operación». Lo compensan dos cosas. Cada operación conserva su
+razonamiento escrito en su variante del enum, y hay una prueba que comprueba
+que la pasada fusionada da exactamente lo mismo que aplicar las operaciones
+una a una, sobre doscientas muestras y seis combinaciones.
+
+Un detalle que cazó el diseño antes de que mordiera: los trozos que reparte
+`rayon` ahora miden `CANALES * 1024` y no 4096. 4096 no es múltiplo de 3, así
+que un trozo partía píxeles por la mitad. Hoy daba igual porque todas las
+operaciones tratan cada valor por separado; la primera que mire al píxel
+entero —y la siguiente lo hace, porque necesita la luminancia— pintaría
+franjas de color en los bordes de cada trozo.
+
 ### Por dentro, una imagen es RGB lineal en `f32`. Siempre
 
 No hay un tipo para 8 bits y otro para 16: abrir un JPEG consiste en
@@ -443,32 +475,31 @@ Ultra, con una vista de 1.600 × 900:
 
 | Operación | Tiempo |
 |---|---|
-| Abrir el TIFF de 16 bits y pasarlo a RGB lineal | 85 ms |
+| Abrir el TIFF de 16 bits y pasarlo a RGB lineal | 122 ms |
 | Muestrear la vista, sin revelar | 10 ms |
-| **Vista revelada (lo que cuesta un movimiento del deslizador)** | **28 ms** |
+| **Vista revelada (lo que cuesta un movimiento del deslizador)** | **13 ms** |
 | Pasar la vista a RGBA de 8 bits para el lienzo | 2,8 ms |
-| Histograma rápido (786.000 muestras) | 26 ms |
-| Histograma completo (1.040.000 muestras) | 198 ms |
-| Revelar la foto entera para exportar | 177 ms |
-| Escribir el JPEG de 12,5 Mpx | 255 ms |
+| Histograma rápido (786.000 muestras) | 19 ms |
+| Histograma completo (1.040.000 muestras) | 86 ms |
+| Revelar la foto entera para exportar | 50 ms |
+| Escribir el JPEG de 12,5 Mpx | 266 ms |
 
-Todas son del perfil de **publicación** (`--release`). En una compilación de
-desarrollo la misma vista tarda unos 270 ms: el perfil `dev` de este proyecto
-ya optimiza las cajas del núcleo (`opt-level = 3` para `pf-image` y
-`pf-document`), pero no la aplicación, así que `npm run tauri dev` se nota
-lento y no es el número que hay que mirar.
+Todas son del perfil de **publicación** (`--release`). Una compilación de
+desarrollo se nota más lenta: el perfil `dev` de este proyecto ya optimiza las
+cajas del núcleo (`opt-level = 3` para `pf-image` y `pf-document`), pero no la
+aplicación, así que `npm run tauri dev` no es donde hay que mirar las cifras.
 
-Los 28 ms de la vista revelada son el número que importa: dan unos **35 cuadros
+Los 13 ms de la vista revelada son el número que importa: dan unos **75 cuadros
 por segundo** arrastrando un deslizador, y **no suben si la foto es más
 grande**, porque dependen del tamaño de la ventana.
 
-Y por eso el histograma tiene dos modos: los 198 ms del completo son
+Y por eso el histograma tiene dos modos: los 86 ms del completo son
 inaceptables sesenta veces por segundo, así que mientras se arrastra se pide el
 rápido y el completo solo al soltar. El completo es el único que puede contar
 bien el recorte; el rápido, al promediar píxeles, puede perder de vista cuatro
 píxeles quemados.
 
-La decisión de **no usar la GPU todavía** sale de estas cifras: con 28 ms por
+La decisión de **no usar la GPU todavía** sale de estas cifras: con 13 ms por
 cuadro en CPU, `wgpu` serían miles de líneas y una superficie que falla
 distinto en cada equipo para arreglar algo que de momento no está roto. Se
 medirá otra vez cuando haya operaciones que miren a los vecinos.
@@ -522,7 +553,7 @@ usa LTO completo y una sola unidad de codegen.
 cargo test
 ```
 
-65 pruebas: 62 del núcleo, que corren en centésimas de segundo porque no
+70 pruebas: 67 del núcleo, que corren en centésimas de segundo porque no
 arrastran Tauri, y 3 de integración que recorren una sesión entera —abrir,
 ajustar, comparar, deshacer, exportar— contra el estado real de la aplicación.
 
@@ -554,7 +585,8 @@ crates/
     exportar.rs     JPEG, PNG, TIFF de 16 bits
     examples/sonda_raw.rs    la prueba de riesgo del RAW
   pf-document/    Documento = original + lista de operaciones
-    operacion.rs    exposición y contraste
+    operacion.rs    qué hace cada operación y por qué
+    plan.rs         las resuelve y las ejecuta en una sola pasada
     examples/revelar.rs      el banco de medidas
 
 src-tauri/        la cáscara: ventana, estado y comandos
