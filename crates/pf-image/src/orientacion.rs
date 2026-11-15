@@ -23,11 +23,33 @@ use crate::{CANALES, Imagen};
 /// Los valores son los de la etiqueta 0x0112 del TIFF/EXIF, del 1 al 8. Se
 /// guardan así, y no como un ángulo, porque cuatro de los ocho casos incluyen
 /// un espejo y no se pueden expresar con un giro.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Orientacion(u8);
 
+/// Lo normal es que una foto no haya que girarla.
+///
+/// Se escribe a mano porque el `Default` que genera el compilador daría
+/// `Orientacion(0)`, que no es ninguna de las ocho y se trataría como
+/// «derecha» por el camino de los números imposibles: funcionaría, pero por
+/// accidente.
+impl Default for Orientacion {
+    fn default() -> Self {
+        Orientacion::DERECHA
+    }
+}
+
 impl Orientacion {
+    /// La foto tal como está: no hay nada que hacer.
     pub const DERECHA: Orientacion = Orientacion(1);
+    /// Los cinco gestos que el usuario puede pedir.
+    ///
+    /// Se escriben enteros y no abreviados porque es el vocabulario de la
+    /// casa: `describir` ya dice «espejo horizontal» con todas sus letras.
+    pub const GIRO_DERECHA: Orientacion = Orientacion(6);
+    pub const GIRO_IZQUIERDA: Orientacion = Orientacion(8);
+    pub const MEDIA_VUELTA: Orientacion = Orientacion(3);
+    pub const ESPEJO_HORIZONTAL: Orientacion = Orientacion(2);
+    pub const ESPEJO_VERTICAL: Orientacion = Orientacion(4);
 
     /// Del número del EXIF. Cualquier cosa fuera de 1..=8 se trata como
     /// «derecha»: un archivo con la etiqueta rota es muchísimo más probable
@@ -48,6 +70,10 @@ impl Orientacion {
     ///
     /// `(trasponer, espejo_horizontal, espejo_vertical)`. El orden de
     /// aplicación importa: primero los espejos y después la trasposición.
+    pub fn pasos_publicos(&self) -> (bool, bool, bool) {
+        self.pasos()
+    }
+
     fn pasos(&self) -> (bool, bool, bool) {
         match self.0 {
             2 => (false, true, false),  // espejo horizontal
@@ -61,6 +87,39 @@ impl Orientacion {
         }
     }
 
+    /// ¿Esta orientación intercambia el ancho por el alto?
+    pub fn traspone(&self) -> bool {
+        self.pasos().0
+    }
+
+    /// La orientación que resulta de aplicar `self` y DESPUÉS `otra`.
+    ///
+    /// # De dónde sale esta fórmula
+    ///
+    /// No es una tabla de 8×8 copiada de ningún sitio: son 64 números que
+    /// nadie puede verificar leyéndolos, y el que esté mal se descubre con
+    /// una foto girada raro seis meses después. Sale de la descomposición que
+    /// ya usa [`Orientacion::pasos`] —espejos primero, trasposición después—
+    /// trabajando en coordenadas normalizadas:
+    ///
+    /// - Si la primera NO traspone, los dos espejos de cada eje se suman por
+    ///   separado y la trasposición es la de la segunda.
+    /// - Si la primera SÍ traspone, la segunda ve los ejes cambiados, así que
+    ///   su espejo horizontal actúa sobre lo que era vertical y al revés; y
+    ///   trasponer dos veces se anula, de ahí el `!t2`.
+    ///
+    /// La red que la sostiene no es este comentario: es la prueba que
+    /// comprueba los 64 pares contra `enderezar`, que ya funciona.
+    pub fn componer(self, otra: Orientacion) -> Orientacion {
+        let (t1, h1, v1) = self.pasos();
+        let (t2, h2, v2) = otra.pasos();
+        if t1 {
+            desde_pasos(!t2, h1 ^ v2, v1 ^ h2)
+        } else {
+            desde_pasos(t2, h1 ^ h2, v1 ^ v2)
+        }
+    }
+
     /// Qué va a medir la foto después de enderezarla.
     pub fn dimensiones_resultantes(&self, d: Dimensiones) -> Dimensiones {
         let (trasponer, _, _) = self.pasos();
@@ -70,6 +129,61 @@ impl Orientacion {
             d
         }
     }
+}
+
+/// La orientación que corresponde a estos tres pasos.
+///
+/// Es la inversa de [`Orientacion::pasos`], y es biyectiva porque los ocho
+/// tríos que devuelve aquel método son los ocho distintos.
+fn desde_pasos(trasponer: bool, espejo_h: bool, espejo_v: bool) -> Orientacion {
+    Orientacion::desde_exif(match (trasponer, espejo_h, espejo_v) {
+        (false, false, false) => 1,
+        (false, true, false) => 2,
+        (false, true, true) => 3,
+        (false, false, true) => 4,
+        (true, false, false) => 5,
+        (true, false, true) => 6,
+        (true, true, true) => 7,
+        (true, true, false) => 8,
+    })
+}
+
+/// De dónde sale, en el original, el píxel (x, y) de la foto ya enderezada.
+///
+/// # Por qué esto trabaja con ÍNDICES y no con un rectángulo
+///
+/// El primer intento fue traducir la región que pide el lienzo a una región
+/// equivalente en el original, y girar después el trozo muestreado. Es lo
+/// evidente y **no puede ser exacto**: reflejar manda el intervalo [i, i+1)
+/// al (W−i−1, W−i], o sea cerrado por el otro lado, así que cualquier regla
+/// de redondeo —`floor` o `ceil`— se va un píxel justo cuando el centro de
+/// muestreo cae en un entero exacto. Lo cazó la prueba de equivalencia con
+/// una región de las elegidas a propósito para eso.
+///
+/// Un giro es una PERMUTACIÓN de píxeles, así que la traducción exacta existe
+/// y es esta: se muestrea sobre la rejilla de la foto girada, como si
+/// estuviera ahí, y para cada índice se mira de dónde sale. Exacto por
+/// construcción, y de regalo se ahorra girar 17 MB en cada cuadro.
+///
+/// `ancho` y `alto` son los del ORIGINAL. Los pasos son los mismos y en el
+/// mismo orden que el bucle de [`enderezar`], que es de donde salen.
+#[inline]
+pub fn indice_en_origen(
+    pasos: (bool, bool, bool),
+    ancho: i64,
+    alto: i64,
+    x: i64,
+    y: i64,
+) -> (i64, i64) {
+    let (trasponer, espejo_h, espejo_v) = pasos;
+    let (mut ox, mut oy) = if trasponer { (y, x) } else { (x, y) };
+    if espejo_h {
+        ox = ancho - 1 - ox;
+    }
+    if espejo_v {
+        oy = alto - 1 - oy;
+    }
+    (ox, oy)
 }
 
 /// Describe en castellano lo que hace una orientación, para la ficha.
@@ -149,6 +263,15 @@ mod pruebas {
         Imagen::nueva(dim, datos).unwrap()
     }
 
+    /// Una imagen con un valor distinto en cada píxel, para poder seguirlos.
+    fn degradado(ancho: u32, alto: u32) -> Imagen {
+        let dim = Dimensiones::nueva(ancho, alto).unwrap();
+        let datos: Vec<f32> = (0..dim.pixeles())
+            .flat_map(|i| [i as f32; CANALES])
+            .collect();
+        Imagen::nueva(dim, datos).unwrap()
+    }
+
     fn valores(img: &Imagen) -> Vec<u32> {
         img.datos().chunks(CANALES).map(|c| c[0] as u32).collect()
     }
@@ -201,6 +324,96 @@ mod pruebas {
         }
         assert_eq!(valores(&img), valores(&numerada()));
         assert_eq!(img.dim(), numerada().dim());
+    }
+
+
+    /// Las ocho orientaciones, para recorrerlas en las pruebas exhaustivas.
+    const TODAS: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
+
+    #[test]
+    fn componer_coincide_con_aplicar_las_dos_de_seguidas() {
+        // LA prueba de la composición. Son los 64 pares contra `enderezar`,
+        // que ya estaba probado: si la fórmula tiene un espejo cambiado de
+        // eje, aquí salta. Los cuatro casos con espejo son los que se
+        // escriben al revés, y sin esta prueba el error se vería como «la
+        // foto gira al contrario» solo en ellos.
+        for a in TODAS {
+            for b in TODAS {
+                let (oa, ob) = (Orientacion::desde_exif(a as u16), Orientacion::desde_exif(b as u16));
+                let dos_pasos = enderezar(enderezar(numerada(), oa).unwrap(), ob).unwrap();
+                let compuesta = enderezar(numerada(), oa.componer(ob)).unwrap();
+                assert_eq!(
+                    valores(&dos_pasos),
+                    valores(&compuesta),
+                    "componer({a}, {b}) = {} no coincide",
+                    oa.componer(ob).numero()
+                );
+                assert_eq!(dos_pasos.dim(), compuesta.dim(), "las dimensiones no cuadran en ({a}, {b})");
+            }
+        }
+    }
+
+    #[test]
+    fn cuatro_giros_a_la_derecha_vuelven_al_principio() {
+        let mut o = Orientacion::DERECHA;
+        for _ in 0..4 {
+            o = o.componer(Orientacion::GIRO_DERECHA);
+        }
+        assert!(o.no_hay_que_hacer_nada());
+        // Y un espejo encima de un giro da la traspuesta, que es la identidad
+        // concreta que caza una composición escrita del revés.
+        assert_eq!(
+            Orientacion::ESPEJO_HORIZONTAL.componer(Orientacion::GIRO_DERECHA).numero(),
+            // La transversa, no la traspuesta: espejar y luego girar a la
+            // derecha NO es lo mismo que girar y luego espejar. Es justo el
+            // par que se escribe al revés, y por eso está aquí con su número.
+            7
+        );
+    }
+
+    #[test]
+    fn desde_pasos_es_la_inversa_de_pasos() {
+        for v in TODAS {
+            let o = Orientacion::desde_exif(v as u16);
+            let (t, h, ve) = o.pasos();
+            assert_eq!(desde_pasos(t, h, ve).numero(), v);
+        }
+    }
+
+    #[test]
+    fn muestrear_girado_da_lo_mismo_que_girar_la_foto_y_muestrear() {
+        // LA prueba de `indice_en_origen`, y la que de verdad importa: pedir
+        // un recorte de la foto girada tiene que dar EXACTAMENTE lo mismo que
+        // girar la foto entera y recortar de ella.
+        //
+        // Las regiones están elegidas a propósito, no al azar: la foto
+        // entera, una esquina, una con decimales, y dos cuyos centros caen en
+        // enteros exactos, que es donde el intento anterior —traducir el
+        // rectángulo en vez del índice— se iba un píxel.
+        let img = degradado(8, 6);
+        let casos: [(pf_core::Region, u32, u32); 5] = [
+            (pf_core::Region { x: 0.0, y: 0.0, ancho: 8.0, alto: 6.0 }, 8, 6),
+            (pf_core::Region { x: 0.0, y: 0.0, ancho: 4.0, alto: 3.0 }, 4, 3),
+            (pf_core::Region { x: 1.5, y: 2.25, ancho: 3.5, alto: 2.5 }, 7, 5),
+            (pf_core::Region { x: 0.5, y: 0.5, ancho: 4.0, alto: 4.0 }, 4, 4),
+            (pf_core::Region { x: 2.0, y: 1.0, ancho: 3.0, alto: 2.0 }, 6, 4),
+        ];
+
+        for v in TODAS {
+            let o = Orientacion::desde_exif(v as u16);
+            let girada = enderezar(img.clone(), o).unwrap();
+            for (region, ancho, alto) in casos {
+                let destino = Dimensiones::nueva(ancho, alto).unwrap();
+                let largo = crate::muestreo::muestrear(&girada, region, destino);
+                let corto = crate::muestreo::muestrear_girado(&img, region, destino, o);
+                assert_eq!(largo.dim(), corto.dim(), "orientación {v}, región {region:?}");
+                assert_eq!(
+                    valores(&largo),
+                    valores(&corto),
+                    "orientación {v}, región {region:?}: los dos caminos no coinciden"
+                );
+            }
+        }
     }
 
     #[test]

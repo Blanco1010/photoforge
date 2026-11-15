@@ -431,6 +431,10 @@ export class Panel {
 
     const m = ficha.metadatos;
     const filas: [string, string | null][] = [
+      // Es la única lectura en pantalla que distingue un giro tuyo de uno que
+      // ya traía la cámara: la orientación del archivo se consume al abrir y
+      // no deja rastro aquí.
+      ["Girada", ficha.giro],
       [
         "Origen",
         ficha.procedencia === "escena"

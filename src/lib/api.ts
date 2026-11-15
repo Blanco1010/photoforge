@@ -24,6 +24,15 @@ export type ClaseCantidad = "luces" | "sombras" | "blancos" | "negros" | "contra
 /** De dónde vienen los píxeles: un RAW sin interpretar o un archivo ya revelado. */
 export type Procedencia = "revelada" | "escena";
 
+/** Los cinco gestos del menú Imagen, más la vuelta atrás. */
+export type Giro =
+  | "derecha"
+  | "izquierda"
+  | "media_vuelta"
+  | "espejo_horizontal"
+  | "espejo_vertical"
+  | "quitar";
+
 export interface CampoExif {
   etiqueta: string;
   valor: string;
@@ -53,6 +62,8 @@ export interface Ficha {
   puede_deshacer: boolean;
   puede_rehacer: boolean;
   hay_cambios: boolean;
+  /** Cómo está girada, en castellano, o `null` si está como venía. */
+  giro: string | null;
 }
 
 export interface Histograma {
@@ -86,6 +97,7 @@ export const api = {
   cerrar: () => invoke<void>("cerrar"),
   ficha: () => invoke<Ficha>("ficha"),
   ajustar: (operacion: Operacion) => invoke<Ficha>("ajustar", { operacion }),
+  girar: (giro: Giro) => invoke<Ficha>("girar", { giro }),
   restablecer: () => invoke<Ficha>("restablecer"),
   deshacer: () => invoke<Ficha>("deshacer"),
   rehacer: () => invoke<Ficha>("rehacer"),

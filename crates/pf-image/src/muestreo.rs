@@ -19,6 +19,8 @@
 //! será, y habrá que decirlo en la interfaz.
 
 use pf_core::{Dimensiones, Region};
+
+use crate::orientacion::{self, Orientacion};
 use rayon::prelude::*;
 
 use crate::{CANALES, Imagen};
@@ -31,6 +33,26 @@ use crate::{CANALES, Imagen};
 /// vista parece parte de la foto—, pero la interfaz debería pedir solo la
 /// intersección con la imagen y no llegar a depender de esto.
 pub fn muestrear(origen: &Imagen, region: Region, destino: Dimensiones) -> Imagen {
+    muestrear_girado(origen, region, destino, Orientacion::DERECHA)
+}
+
+/// Lo mismo, pero sobre la foto GIRADA sin llegar a girarla.
+///
+/// `region` y `destino` van en coordenadas de la foto ya enderezada, que es
+/// la que el usuario está viendo. Por dentro se muestrea sobre esa rejilla
+/// imaginaria y cada índice se traduce al original con
+/// [`orientacion::indice_en_origen`].
+///
+/// Por qué así y no girando el trozo después de muestrearlo: porque un giro
+/// es una permutación, traducirlo a nivel de índice es exacto, y girar el
+/// trozo costaría reservar y rellenar de ceros 17 MB en cada cuadro para
+/// luego sobrescribirlos. El porqué largo está en `indice_en_origen`.
+pub fn muestrear_girado(
+    origen: &Imagen,
+    region: Region,
+    destino: Dimensiones,
+    giro: Orientacion,
+) -> Imagen {
     let escala_x = region.ancho / destino.ancho as f32;
     let escala_y = region.alto / destino.alto as f32;
 
@@ -47,6 +69,11 @@ pub fn muestrear(origen: &Imagen, region: Region, destino: Dimensiones) -> Image
     let ancho_destino = destino.ancho as usize;
     let fuente = origen.datos();
     let (ancho_origen, alto_origen) = (origen.ancho() as i64, origen.alto() as i64);
+    // Las medidas de la foto YA girada: es la rejilla sobre la que se
+    // muestrea, aunque esos píxeles no existan en ningún sitio.
+    let girada = giro.dimensiones_resultantes(origen.dim());
+    let (ancho_vista, alto_vista) = (girada.ancho as i64, girada.alto as i64);
+    let pasos = giro.pasos_publicos();
 
     datos
         .par_chunks_mut(ancho_destino * CANALES)
@@ -55,18 +82,29 @@ pub fn muestrear(origen: &Imagen, region: Region, destino: Dimensiones) -> Image
             let iy = region.y + (dy as f32 + 0.5) * escala_y;
             for dx in 0..ancho_destino {
                 let ix = region.x + (dx as f32 + 0.5) * escala_x;
+                let leer = |x: i64, y: i64| -> usize {
+                    // Primero se acota en la rejilla GIRADA, que es la que
+                    // el usuario ve, y después se traduce al original: al
+                    // revés, repetir el borde repetiría el borde equivocado.
+                    let x = x.clamp(0, ancho_vista - 1);
+                    let y = y.clamp(0, alto_vista - 1);
+                    let (ox, oy) =
+                        orientacion::indice_en_origen(pasos, ancho_origen, alto_origen, x, y);
+                    (oy as usize * ancho_origen as usize + ox as usize) * CANALES
+                };
                 let px = if hay_que_promediar {
                     promedio(
                         fuente,
-                        ancho_origen,
-                        alto_origen,
+                        &leer,
                         ix - escala_x * 0.5,
                         iy - escala_y * 0.5,
                         escala_x,
                         escala_y,
+                        ancho_vista,
+                        alto_vista,
                     )
                 } else {
-                    cercano(fuente, ancho_origen, alto_origen, ix, iy)
+                    cercano(fuente, &leer, ix, iy)
                 };
                 let d = dx * CANALES;
                 fila[d] = px[0];
@@ -80,35 +118,30 @@ pub fn muestrear(origen: &Imagen, region: Region, destino: Dimensiones) -> Image
 }
 
 #[inline]
-fn indice(ancho: i64, alto: i64, x: i64, y: i64) -> usize {
-    let x = x.clamp(0, ancho - 1);
-    let y = y.clamp(0, alto - 1);
-    (y as usize * ancho as usize + x as usize) * CANALES
-}
-
-#[inline]
-fn cercano(fuente: &[f32], ancho: i64, alto: i64, x: f32, y: f32) -> [f32; CANALES] {
-    let i = indice(ancho, alto, x.floor() as i64, y.floor() as i64);
+fn cercano(fuente: &[f32], leer: &impl Fn(i64, i64) -> usize, x: f32, y: f32) -> [f32; CANALES] {
+    let i = leer(x.floor() as i64, y.floor() as i64);
     [fuente[i], fuente[i + 1], fuente[i + 2]]
 }
 
 /// Media de todos los píxeles de origen que caen bajo un píxel de destino.
 ///
-/// Por qué la media y no un filtro con pesos (Lanczos y compañía): la media de
-/// caja es exactamente lo que hace un sensor al juntar píxeles, no inventa
+/// Por qué la media y no un filtro con pesos (Lanczos y compañía): la media
+/// de caja es exactamente lo que hace un sensor al juntar píxeles, no inventa
 /// contraste en los bordes y cuesta una suma por píxel. Los filtros con pesos
 /// dan una miniatura más nítida, y ese es su problema: una miniatura más
 /// nítida que la foto miente sobre el enfoque, que es justo lo que alguien
 /// está comprobando cuando aleja la vista.
 #[inline]
+#[allow(clippy::too_many_arguments)]
 fn promedio(
     fuente: &[f32],
-    ancho: i64,
-    alto: i64,
+    leer: &impl Fn(i64, i64) -> usize,
     x0: f32,
     y0: f32,
     paso_x: f32,
     paso_y: f32,
+    ancho: i64,
+    alto: i64,
 ) -> [f32; CANALES] {
     let xi = (x0.floor() as i64).max(0);
     let yi = (y0.floor() as i64).max(0);
@@ -119,7 +152,7 @@ fn promedio(
     let mut n = 0u32;
     for y in yi..yf {
         for x in xi..xf {
-            let i = indice(ancho, alto, x, y);
+            let i = leer(x, y);
             acc[0] += fuente[i];
             acc[1] += fuente[i + 1];
             acc[2] += fuente[i + 2];

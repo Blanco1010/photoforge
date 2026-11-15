@@ -17,8 +17,8 @@ Este README explica **por qué** está hecho así. El qué se lee en el código.
 Abre **RAW de cámara** (DNG, CR2, CR3, NEF, ARW, RAF, RW2, ORF y más), JPG,
 PNG y TIFF de 8 o 16 bits. Los pinta en un lienzo con zoom y desplazamiento,
 enseña sus metadatos EXIF y su histograma, revela con exposición, luces,
-sombras, blancos, negros, curva de luces y contraste, todo de forma no
-destructiva, compara con cómo se abrió manteniendo
+sombras, blancos, negros, curva de luces y contraste, gira y voltea, todo de
+forma no destructiva, compara con cómo se abrió manteniendo
 pulsado un botón, deshace y rehace, y exporta a JPEG, PNG o TIFF de 16 bits.
 
 Lo que **no** hace todavía: capas, máscaras, selecciones y guardar proyectos.
@@ -215,6 +215,26 @@ proyecto y no de quien lo use.
 
 ## Las decisiones y sus motivos
 
+### El menú Imagen lleva seis entradas y ninguna más
+
+Girar 90° en los dos sentidos, 180°, los dos espejos y «Como venía el
+archivo». Plano, sin submenú «Transformar»: el menú no va a tener nada más,
+así que el submenú sería una puerta que da a otra puerta, y `menu.ts` está
+construido entero sobre «hay un menú abierto si y solo si el foco está dentro
+de la barra» — un submenú convierte ese campo en una pila y las catorce reglas
+de teclado dejan de salir solas.
+
+Lo que no lleva, y por qué cada cosa: «Propiedades» (ya está todo en
+Metadatos, segunda puerta), «Escalar» (un escalado no es una permutación: no
+se deshace sin pérdida y sí cambia el histograma, es otra decisión de fondo),
+«Recortar» (no hay selección), «Modo» o «Precisión» (hay exactamente un modo,
+RGB lineal en f32) y la rotación de un ángulo cualquiera (`orientacion.rs`
+sabe permutar, no interpolar).
+
+«Como venía el archivo» nombra el destino y no el acto, así que no se lee como
+«deshaz un paso». Hace falta de verdad: después de cinco ajustes más, Ctrl+Z
+no te desgira sin desandar también los ajustes.
+
 ### La cáscara es la de GIMP, y lo interesante es lo que se le ha quitado
 
 Barra de menús arriba, columna de herramientas a la izquierda, paneles que se
@@ -395,6 +415,66 @@ Las secciones no son cajones por tema: son la misma raya que dibuja
 `Operacion::orden()`. Leído de arriba abajo —Luz, luego Interpretación— el
 panel enseña el orden canónico, que es la decisión más difícil de explicar del
 programa y que hasta ahora vivía escondida en un `sort_by_key`.
+
+### El giro no es una operación de la lista, y los tres motivos importan
+
+Las nueve operaciones de revelado viven en una lista ordenada. El giro no:
+es una propiedad aparte del documento. Parece un detalle y decide bastante.
+
+1. «Antes» compara contra el revelado de partida. Si el giro estuviera en la
+   lista, comparar desgiraría la foto y enseñaría un recorte que no
+   corresponde, presentado como «el original».
+2. Las nueve son de píxel a píxel y conservan las dimensiones. Un giro no.
+3. El que de verdad decide: **el giro conmuta con las nueve**, así que su
+   sitio en el orden canónico sería arbitrario — y ese orden existe
+   precisamente porque el resultado no puede depender de él. Una operación
+   sin sitio en el orden no es una operación de esa lista.
+
+Lo que sí comparten es el historial: `Instantanea` lleva las operaciones **y**
+el giro juntos, porque «subí la exposición, giré, bajé el contraste» tiene que
+deshacerse en orden inverso. Con dos pilas separadas ese orden se pierde.
+
+Y la distinción fina: «Restablecer el revelado» **no desgira**, porque un giro
+no es revelado; para eso está «Como venía el archivo» en el menú Imagen. El
+botón de comparar tampoco se enciende al girar: comparar solo habla de
+operaciones, así que se ofrecería y no cambiaría nada. El asterisco del título
+sí cuenta el giro, porque significa «esto no está como lo abriste».
+
+### Girar no gira los píxeles: se muestrea sobre la rejilla girada
+
+El primer intento fue el evidente: traducir la región que pide el lienzo a una
+región equivalente en el original y girar después el trocito muestreado. **No
+puede ser exacto**, y la prueba lo cazó: reflejar manda el intervalo
+`[i, i+1)` al `(W−i−1, W−i]`, cerrado por el otro lado, así que cualquier
+regla de redondeo se va un píxel justo cuando el centro de muestreo cae en un
+entero exacto. Las regiones de la prueba incluyen ese caso a propósito.
+
+Un giro es una **permutación** de píxeles, así que la traducción exacta existe
+y es a nivel de índice: se muestrea sobre la rejilla de la foto girada, como
+si estuviera ahí, y para cada índice se mira de dónde sale. Exacto por
+construcción, y de regalo se ahorra reservar y rellenar de ceros 17 MB en cada
+cuadro. La prueba compara los dos caminos para **las ocho orientaciones por
+cinco regiones** y exige igualdad exacta.
+
+Y el histograma no paga el giro: una permutación mueve los valores de sitio
+sin cambiar ninguno, así que los 256 números son los mismos. Hay una prueba
+que lo defiende el día que alguien «arregle» ese camino.
+
+### Lo que cuesta girar, medido
+
+| | Vista revelada |
+|---|---|
+| Sin girar | 13,3 ms |
+| Espejo horizontal | 13,4 ms |
+| Girada 180° | 13,2 ms |
+| **Girada 90°** | **22,8 ms** |
+
+Los espejos y el 180° son **gratis**, y el 90° cuesta nueve milisegundos y
+medio. El motivo es la caché y no la aritmética: un espejo lee las mismas
+líneas de memoria en otro orden, mientras que transponer recorre el original
+por columnas y cada píxel es un fallo de caché. Sigue dando unos 43 cuadros
+por segundo, así que se deja así; si algún día estorba, la salida conocida es
+recorrer en bloques para que origen y destino quepan a la vez en caché.
 
 ### Por dentro, una imagen es RGB lineal en `f32`. Siempre
 
@@ -602,7 +682,7 @@ usa LTO completo y una sola unidad de codegen.
 cargo test
 ```
 
-81 pruebas: 78 del núcleo, que corren en centésimas de segundo porque no
+91 pruebas: 88 del núcleo, que corren en centésimas de segundo porque no
 arrastran Tauri, y 3 de integración que recorren una sesión entera —abrir,
 ajustar, comparar, deshacer, exportar— contra el estado real de la aplicación.
 
@@ -626,8 +706,8 @@ crates/
   pf-image/       Imagen (RGB lineal f32)
     color.rs        sRGB <-> lineal, con sus tablas
     carga.rs        JPG, PNG, TIFF -> Imagen
-    muestreo.rs     el recorte y escalado de la vista
-    orientacion.rs  poner la foto derecha
+    muestreo.rs     el recorte y escalado de la vista, girado incluido
+    orientacion.rs  las ocho transformaciones y su álgebra
     raw.rs          RAW de cámara: normalizar, revelar y exponer
     histograma.rs   256 columnas y el recuento de recorte
     metadatos.rs    EXIF
@@ -667,6 +747,7 @@ sobre píxeles**. Si hace falta uno, su sitio es `pf-image`.
 | `Ctrl+W` | Cerrar la foto |
 | `Ctrl+Q` | Salir |
 | `Ctrl+Z` / `Ctrl+Y` | Deshacer / Rehacer |
+| `Ctrl+R` / `Ctrl+Mayús+R` | Girar 90° a la derecha / a la izquierda |
 | `0` | Ajustar a la ventana |
 | `1` | Tamaño real 1:1 |
 | `P` | Ocultar o enseñar el panel |

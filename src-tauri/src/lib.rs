@@ -27,6 +27,7 @@ pub fn run() {
             comandos::ficha,
             comandos::renderizar,
             comandos::ajustar,
+            comandos::girar,
             comandos::restablecer,
             comandos::deshacer,
             comandos::rehacer,

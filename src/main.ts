@@ -30,7 +30,7 @@
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
-import { api, type Ficha, type Formato, type Operacion } from "./lib/api";
+import { api, type Ficha, type Formato, type Giro, type Operacion } from "./lib/api";
 import { el } from "./lib/dom";
 import { BarraEstado } from "./ui/estado";
 import { Herramientas } from "./ui/herramientas";
@@ -223,6 +223,56 @@ class Aplicacion {
         ],
       },
       {
+        titulo: "Imagen",
+        entradas: [
+          {
+            id: "girar-derecha",
+            texto: "Girar 90° a la derecha",
+            atajo: { ctrl: true, tecla: "r" },
+            activa: hayFoto,
+            hacer: () => void this.girar("derecha"),
+          },
+          {
+            id: "girar-izquierda",
+            texto: "Girar 90° a la izquierda",
+            atajo: { ctrl: true, mayus: true, tecla: "r" },
+            activa: hayFoto,
+            hacer: () => void this.girar("izquierda"),
+          },
+          {
+            id: "girar-media",
+            texto: "Girar 180°",
+            activa: hayFoto,
+            hacer: () => void this.girar("media_vuelta"),
+          },
+          {
+            id: "espejo-h",
+            texto: "Espejo horizontal",
+            separadorAntes: true,
+            activa: hayFoto,
+            hacer: () => void this.girar("espejo_horizontal"),
+          },
+          {
+            id: "espejo-v",
+            texto: "Espejo vertical",
+            activa: hayFoto,
+            hacer: () => void this.girar("espejo_vertical"),
+          },
+          {
+            // Nombra el DESTINO y no el acto, así que no se lee como
+            // «deshaz un paso». Hace falta de verdad: después de cinco
+            // ajustes más, Ctrl+Z no te desgira sin desandar también los
+            // ajustes, y volver a mano desde un estado con espejo es un
+            // acertijo.
+            id: "giro-quitar",
+            texto: "Como venía el archivo",
+            separadorAntes: true,
+            activa: (f) => f?.giro != null,
+            hacer: () => void this.girar("quitar"),
+          },
+        ],
+      },
+      {
         titulo: "Ver",
         entradas: [
           {
@@ -291,8 +341,11 @@ class Aplicacion {
     // El asterisco es el de GIMP. Solo el nombre y el asterisco: Windows
     // recorta el título en la barra de tareas, y un título corto es lo que
     // mantiene el asterisco a la vista.
+    // El asterisco SÍ cuenta el giro, aunque `hay_cambios` no: significa
+    // «este documento no está como lo abriste», y una foto girada no lo está.
+    const tocada = this.ficha?.hay_cambios || this.ficha?.giro != null;
     const titulo = this.ficha
-      ? `${this.ficha.hay_cambios ? "*" : ""}${this.ficha.nombre} — PhotoForge`
+      ? `${tocada ? "*" : ""}${this.ficha.nombre} — PhotoForge`
       : "PhotoForge";
     void getCurrentWindow().setTitle(titulo);
   }
@@ -386,8 +439,22 @@ class Aplicacion {
     try {
       this.ficha = await accion();
       this.sincronizar();
-      this.lienzo.refrescar();
+      // `actualizar` y no `refrescar`: deshacer puede desgirar la foto, y
+      // entonces la vista hay que reencuadrarla.
+      this.lienzo.actualizar(this.ficha);
       await this.histograma.pedir(true);
+    } catch (e) {
+      this.estado.decir(String(e), true);
+    }
+  }
+
+  /** Girar o voltear. El histograma no se pide: un giro no lo cambia. */
+  private async girar(giro: Giro): Promise<void> {
+    if (!this.ficha) return;
+    try {
+      this.ficha = await api.girar(giro);
+      this.sincronizar();
+      this.lienzo.actualizar(this.ficha);
     } catch (e) {
       this.estado.decir(String(e), true);
     }
@@ -445,8 +512,12 @@ class Aplicacion {
 
       for (const a of acciones) {
         if (coincide(e, a.atajo) || coincide(e, a.alias)) {
-          if (!a.activa(this.ficha)) return;
+          // El `preventDefault` va ANTES de mirar si la acción está activa, y
+          // es importante: una tecla declarada en la tabla no debe llegar
+          // nunca al WebView, esté activa o no. Con la ventana vacía los
+          // giros están apagados, y Ctrl+R sin foto recargaría la página.
           e.preventDefault();
+          if (!a.activa(this.ficha)) return;
           a.hacer();
           return;
         }

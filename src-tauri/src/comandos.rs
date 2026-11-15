@@ -16,7 +16,7 @@
 use std::path::PathBuf;
 
 use pf_core::{Dimensiones, Error, Procedencia, Region, Resultado};
-use pf_document::{Documento, Operacion, Revelado};
+use pf_document::{Documento, Giro, Operacion, Revelado};
 use pf_image::histograma::Histograma;
 use pf_image::metadatos::Metadatos;
 
@@ -44,6 +44,13 @@ pub struct Ficha {
     pub puede_deshacer: bool,
     pub puede_rehacer: bool,
     pub hay_cambios: bool,
+    /// Cómo está girada la foto, en castellano, o `null` si está como venía.
+    ///
+    /// Es una sola cosa con tres consumidores: enciende la entrada «Como
+    /// venía el archivo», decide el asterisco del título y pone la fila
+    /// «Girada» en los metadatos. El texto se escribe en Rust y no en
+    /// TypeScript para que esas palabras vivan en un solo sitio.
+    pub giro: Option<&'static str>,
 }
 
 fn ficha_de(d: &Documento) -> Ficha {
@@ -72,6 +79,7 @@ fn ficha_de(d: &Documento) -> Ficha {
         puede_deshacer: d.puede_deshacer(),
         puede_rehacer: d.puede_rehacer(),
         hay_cambios: d.hay_cambios(),
+        giro: d.giro_descrito(),
     }
 }
 
@@ -148,6 +156,14 @@ pub fn renderizar(
 pub fn ajustar(estado: tauri::State<'_, Estado>, operacion: Operacion) -> Resultado<Ficha> {
     estado.con_mut(|d| {
         d.ajustar(operacion);
+        ficha_de(d)
+    })
+}
+
+#[tauri::command]
+pub fn girar(estado: tauri::State<'_, Estado>, giro: Giro) -> Resultado<Ficha> {
+    estado.con_mut(|d| {
+        d.girar(giro);
         ficha_de(d)
     })
 }

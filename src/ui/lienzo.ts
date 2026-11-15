@@ -76,6 +76,28 @@ export class Lienzo {
     this.ajustarAVentana();
   }
 
+  /**
+   * Cambia la foto por su versión nueva sin perder la vista.
+   *
+   * La regla es una y sirve para el giro, para deshacer y para la vuelta
+   * atrás: **la vista no se mueve nunca salvo que la foto haya cambiado de
+   * forma.** Así, girar 90° reencuadra —porque si no, la foto se saldría de
+   * la ventana— y un espejo o un giro de 180° conservan el zoom y el sitio
+   * exactos, que es lo que uno espera si estaba mirando un detalle.
+   *
+   * Esto arregla además un fallo que ya estaba: `cargar` era el único sitio
+   * que renovaba la ficha guardada, así que deshacer dejaba al lienzo con
+   * una ficha vieja. Hoy era invisible porque ninguna operación cambiaba las
+   * dimensiones; con el giro, molestaría a la primera.
+   */
+  actualizar(ficha: Ficha): void {
+    const cambioLaForma =
+      this.ficha?.ancho !== ficha.ancho || this.ficha?.alto !== ficha.alto;
+    this.ficha = ficha;
+    if (cambioLaForma) this.ajustarAVentana();
+    else this.refrescar();
+  }
+
   descargar(): void {
     this.ficha = null;
     this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);

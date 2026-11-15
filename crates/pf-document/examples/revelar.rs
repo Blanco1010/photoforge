@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use pf_core::{Dimensiones, Region};
-use pf_document::{Documento, Operacion, Revelado};
+use pf_document::{Documento, Giro, Operacion, Revelado};
 
 /// El tamaño de vista contra el que se mide: una ventana de 1.600 × 900 en una
 /// pantalla sin escalado. Es el caso normal, no el mejor ni el peor.
@@ -24,6 +24,13 @@ const VISTA: (u32, u32) = (1600, 900);
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let exportar = args.iter().any(|a| a == "--exportar");
+    // Para medir lo que cuesta el giro por cuadro.
+    let girar: Option<Giro> = args.iter().find_map(|a| match a.strip_prefix("--girar=") {
+        Some("derecha") => Some(Giro::Derecha),
+        Some("media") => Some(Giro::MediaVuelta),
+        Some("espejo") => Some(Giro::EspejoHorizontal),
+        _ => None,
+    });
     // Los dos ajustes son parámetros y no constantes porque un JPEG ya
     // revelado y un TIFF salido de un RAW lineal piden exposiciones muy
     // distintas, y el ejemplo tiene que servir para los dos.
@@ -49,7 +56,7 @@ fn main() {
 
     for ruta in rutas {
         println!("\n═══ {}", ruta.display());
-        if let Err(e) = revelar(&ruta, exportar, ev, contraste, [luces, sombras, blancos, negros]) {
+        if let Err(e) = revelar(&ruta, exportar, girar, ev, contraste, [luces, sombras, blancos, negros]) {
             eprintln!("  ERROR: {e}");
         }
     }
@@ -58,6 +65,7 @@ fn main() {
 fn revelar(
     ruta: &Path,
     exportar: bool,
+    girar: Option<Giro>,
     ev: Option<f32>,
     contraste: Option<f32>,
     tonales: [Option<f32>; 4],
@@ -66,6 +74,9 @@ fn revelar(
     let mut doc = Documento::abrir(ruta)?;
     let ms_abrir = reloj.elapsed().as_millis();
 
+    if let Some(g) = girar {
+        doc.girar(g);
+    }
     let dim = doc.dim();
     println!(
         "  {} × {} ({:.1} Mpx) · {} MB en RGB lineal · abierta en {ms_abrir} ms",
