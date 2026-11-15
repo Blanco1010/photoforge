@@ -212,11 +212,13 @@ export class Lienzo {
     // Píxeles de dispositivo: en una pantalla con escalado al 150 %, pedir
     // solo los píxeles CSS daría una imagen borrosa justo en la herramienta
     // en la que se mira el enfoque.
+    //
+    // El tamaño se calcula aquí pero NO se asigna todavía: asignar
+    // `canvas.width` borra el bitmap por su cuenta, y hasta que no lleguen
+    // los píxeles nuevos no se puede borrar nada.
     const dpr = window.devicePixelRatio || 1;
-    if (this.canvas.width !== ancho * dpr || this.canvas.height !== alto * dpr) {
-      this.canvas.width = Math.round(ancho * dpr);
-      this.canvas.height = Math.round(alto * dpr);
-    }
+    const anchoLienzo = Math.round(ancho * dpr);
+    const altoLienzo = Math.round(alto * dpr);
 
     // Dónde cae la foto dentro de la ventana, en píxeles CSS.
     const ix0 = (0 - this.cx) * this.zoom + ancho / 2;
@@ -232,8 +234,12 @@ export class Lienzo {
     const vx1 = Math.min(ancho, ix1);
     const vy1 = Math.min(alto, iy1);
 
-    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     if (vx1 <= vx0 || vy1 <= vy0) {
+      // La foto se ha ido entera de la ventana. Este es el único caso en que
+      // el lienzo se borra sin tener nada nuevo que poner, y es correcto:
+      // aquí lo que hay que enseñar ES el vacío.
+      this.redimensionar(anchoLienzo, altoLienzo);
+      this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
       this.alPintar?.({ zoom: this.zoom, ancho: 0, alto: 0, ms: 0 });
       return;
     }
@@ -260,11 +266,52 @@ export class Lienzo {
     }
     const ms = performance.now() - comenzo;
 
+    // La foto pudo cerrarse —o abrirse otra— mientras la petición viajaba. Sin
+    // esta comprobación, esos píxeles se pintarían encima de un lienzo que ya
+    // no es el suyo.
+    if (this.ficha !== ficha) return;
+
     const datos = new ImageData(new Uint8ClampedArray(bytes), destinoAncho, destinoAlto);
+
+    // # Aquí está la razón de que todo lo anterior no tocara el lienzo
+    //
+    // Borrar y pintar ocurren seguidos, sin un solo `await` en medio. El
+    // navegador compone la pantalla entre tareas, nunca a mitad de una, así
+    // que es imposible que llegue a enseñar el hueco: lo que había antes
+    // sigue a la vista hasta el instante en que lo sustituye lo nuevo.
+    //
+    // Con el borrado puesto ANTES de pedir los píxeles —que es como estaba—
+    // el lienzo pasaba vacío los 30-50 ms de cada petición. Y durante un
+    // arrastre eso no se veía como un parpadeo sino como una desaparición
+    // completa: el bucle de `pintar` encadena una vuelta tras otra en
+    // microtareas, el compositor solo mira entre tareas, y cada vez que
+    // miraba el lienzo ya estaba borrado otra vez. La foto no volvía hasta
+    // que el usuario soltaba y el último cuadro se quedaba sin sucesor.
+    //
+    // El precio, que se acepta: mientras se arrastra se ve el cuadro
+    // anterior, un paso por detrás, en vez de la posición exacta del ratón.
+    // Un retraso se perdona; un hueco, no.
+    this.redimensionar(anchoLienzo, altoLienzo);
+    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     // `putImageData` no pasa por la transformación del contexto, así que sus
     // coordenadas van en píxeles de dispositivo y no en píxeles CSS.
     this.ctx.putImageData(datos, Math.round(vx0 * dpr), Math.round(vy0 * dpr));
 
     this.alPintar?.({ zoom: this.zoom, ancho: destinoAncho, alto: destinoAlto, ms });
+  }
+
+  /**
+   * Ajusta el bitmap del lienzo, solo si de verdad cambió de tamaño.
+   *
+   * La comprobación no es por ahorrar: asignar `canvas.width` o
+   * `canvas.height` borra el contenido aunque se asigne el mismo número, así
+   * que hacerlo en cada cuadro provocaría el mismo hueco que todo lo de
+   * arriba trata de evitar.
+   */
+  private redimensionar(ancho: number, alto: number): void {
+    if (this.canvas.width !== ancho || this.canvas.height !== alto) {
+      this.canvas.width = ancho;
+      this.canvas.height = alto;
+    }
   }
 }
