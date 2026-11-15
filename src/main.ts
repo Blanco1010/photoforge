@@ -93,7 +93,7 @@ class Aplicacion {
         texto: "RAW de cámara, JPG, PNG y TIFF. El archivo original no se modifica nunca.",
       }),
       el("button", {
-        clase: "boton boton--principal",
+        clase: "boton",
         texto: "Abrir…",
         alClic: () => void this.abrir(),
       }),

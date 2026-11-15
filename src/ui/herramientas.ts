@@ -72,7 +72,7 @@ export class Herramientas {
     );
 
     this.comparar = el("button", {
-      clase: "herramienta herramienta--momentanea",
+      clase: "herramienta",
       type: "button",
       tabindex: "-1",
       titulo: "Mantén pulsado para ver el original (\\)",

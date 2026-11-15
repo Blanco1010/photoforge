@@ -298,6 +298,38 @@ body {
   color: var(--texto);
 }
 
+/*
+ * El único botón de la aplicación.
+ *
+ * Vive en la pantalla de «Abre una foto para empezar» y en ningún sitio más:
+ * todo lo demás son menús, iconos de herramienta y deslizadores. Por eso no
+ * hay un `.boton--principal` ni un `.boton--secundario`: un modificador sin
+ * un hermano al lado es ceremonia, y el día que haya un segundo botón se
+ * parte entonces.
+ */
+.boton {
+  height: 32px;
+  padding: 0 16px;
+  background: var(--acento);
+  color: var(--texto-sobre-acento);
+  border: none;
+  border-radius: var(--radio-chico);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--transicion);
+}
+
+.boton:hover {
+  background: var(--acento-hover);
+}
+
+.boton:focus-visible {
+  outline: 2px solid var(--acento);
+  outline-offset: 2px;
+}
+
 .vacio__ayuda {
   margin: 0 0 8px;
   font-size: 12px;

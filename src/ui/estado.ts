@@ -42,6 +42,16 @@ export class BarraEstado {
   private readonly pantalla: HTMLElement;
   private readonly muestra: HTMLElement;
   private readonly cifras: HTMLElement;
+
+  /*
+   * La casilla del cuentagotas depende de DOS cosas —que haya foto y que la
+   * herramienta sea el cuentagotas—, y cada una la cambia un método distinto.
+   * Guardarlas y recalcular en un solo sitio es lo que impide que la casilla
+   * se quede enseñando «pincha para leer un color» sobre una ventana vacía,
+   * que es justo lo que pasaba.
+   */
+  private hayFoto = false;
+  private conCuentagotas = false;
   private readonly zoom: HTMLElement;
   private readonly tamano: HTMLElement;
   private readonly ms: HTMLElement;
@@ -129,9 +139,13 @@ export class BarraEstado {
 
   /** Enseña u oculta la casilla del cuentagotas según la herramienta. */
   ponerHerramienta(h: Herramienta): void {
-    const con = h === "cuentagotas";
-    this.pantalla.hidden = !con;
-    if (con) this.ponerColor(null);
+    this.conCuentagotas = h === "cuentagotas";
+    this.ponerColor(null);
+    this.refrescarPantalla();
+  }
+
+  private refrescarPantalla(): void {
+    this.pantalla.hidden = !(this.hayFoto && this.conCuentagotas);
   }
 
   /** Las casillas 4 y 6, que escribe el lienzo en cada cuadro. */
@@ -147,6 +161,8 @@ export class BarraEstado {
 
   /** La casilla 5, que solo cambia al abrir o cerrar una foto. */
   ponerFoto(ficha: Ficha | null): void {
+    this.hayFoto = ficha !== null;
+    this.refrescarPantalla();
     if (!ficha) {
       this.tamano.textContent = "";
       this.ponerVista(null);
