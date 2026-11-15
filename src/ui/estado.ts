@@ -40,6 +40,8 @@ export class BarraEstado {
   private readonly original: HTMLElement;
   private readonly mensaje: HTMLElement;
   private readonly pantalla: HTMLElement;
+  private readonly muestra: HTMLElement;
+  private readonly cifras: HTMLElement;
   private readonly zoom: HTMLElement;
   private readonly tamano: HTMLElement;
   private readonly ms: HTMLElement;
@@ -47,7 +49,25 @@ export class BarraEstado {
   constructor() {
     this.original = el("span", { clase: "estado__original", texto: "ORIGINAL" });
     this.mensaje = el("span", { clase: "estado__mensaje", texto: "Listo" });
-    this.pantalla = el("span", { clase: "estado__pantalla" });
+    // Un cuadradito con el color de verdad y los números al lado.
+    //
+    // La primera versión eran solo los números, y Juan dijo que el
+    // cuentagotas «no funciona»: funcionaba, pero escribía texto gris de 11
+    // píxeles al fondo de la pantalla, lejos de donde estaba mirando. Una
+    // lectura que no se nota es una lectura que no existe, y el color se ve
+    // con el rabillo del ojo mientras los números hay que ir a leerlos.
+    this.muestra = el("span", { clase: "estado__muestra" });
+    this.cifras = el("span", { clase: "estado__cifras" });
+    this.pantalla = el(
+      "span",
+      { clase: "estado__pantalla" },
+      // El rótulo se queda: es donde vive el asterisco. Lo que lee el
+      // cuentagotas es el color EN PANTALLA, no la luz de la escena, y eso
+      // tiene que estar en lo que el usuario ve siempre y no en un tooltip.
+      el("span", { clase: "estado__rotulo", texto: "En pantalla" }),
+      this.muestra,
+      this.cifras,
+    );
     this.zoom = el("span", { clase: "estado__zoom" });
     this.tamano = el("span", { clase: "estado__tamano" });
     this.ms = el("span", { clase: "estado__ms" });
@@ -89,11 +109,22 @@ export class BarraEstado {
    */
   ponerColor(rgb: [number, number, number] | null): void {
     if (!rgb) {
-      this.pantalla.textContent = "En pantalla —";
+      this.muestra.style.background = "transparent";
+      this.muestra.classList.remove("estado__muestra--con-color");
+      this.cifras.textContent = "pincha para leer un color";
+      this.pantalla.classList.remove("estado__pantalla--con-color");
       return;
     }
     const [r, g, b] = rgb;
-    this.pantalla.textContent = `En pantalla  R ${r}  G ${g}  B ${b}`;
+    const hex = [r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("");
+    this.muestra.style.background = `rgb(${r} ${g} ${b})`;
+    this.muestra.classList.add("estado__muestra--con-color");
+    // El hexadecimal además de los tres números: es lo que la gente copia y
+    // pega, y ocupa menos que repetir «En pantalla».
+    this.cifras.textContent = `${r} ${g} ${b}  #${hex}`;
+    this.pantalla.classList.add("estado__pantalla--con-color");
+    this.pantalla.title =
+      "El color tal como se ve en pantalla (sRGB de 8 bits), no la luz lineal de la escena";
   }
 
   /** Enseña u oculta la casilla del cuentagotas según la herramienta. */

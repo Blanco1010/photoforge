@@ -287,7 +287,16 @@ rodeos:
 
 Por eso la casilla se llama **«En pantalla»** y no «Color»: el asterisco va en
 el rótulo que el usuario lee siempre, no en un tooltip ni en un comentario del
-fuente. Una lectura honrada de la escena necesitaría un comando
+fuente.
+
+Y lleva un cuadradito con el color leído, que no es adorno. La primera versión
+escribía solo los números, y el autor dijo que el cuentagotas «no funciona»:
+funcionaba, pero escribía texto gris de 11 píxeles al fondo de la pantalla,
+lejos de donde estaba mirando. **Una lectura que no se nota es una lectura que
+no existe.** El color se ve con el rabillo del ojo; los números hay que ir a
+leerlos. Por lo mismo, arrastrar con el cuentagotas pulsado va leyendo sobre la
+marcha: recorrer la foto y ver cambiar el color es lo que lo convierte en una
+herramienta en vez de en un botón que escribe un número. Una lectura honrada de la escena necesitaría un comando
 `muestrear(x, y)` en Rust que leyera la imagen lineal en `f32`; no existe, y
 el código lo dice donde se escribe el número.
 

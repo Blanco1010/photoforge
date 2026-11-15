@@ -146,6 +146,12 @@ export class Lienzo {
     return [d[0], d[1], d[2]];
   }
 
+  /** Lee el color bajo el puntero y se lo cuenta a quien escuche. */
+  private leerBajoElCursor(e: PointerEvent): void {
+    const r = this.nodo.getBoundingClientRect();
+    this.alMuestrear?.(this.muestrear(e.clientX - r.left, e.clientY - r.top));
+  }
+
   comparar(activo: boolean): void {
     if (this.comparando === activo) return;
     this.comparando = activo;
@@ -189,6 +195,7 @@ export class Lienzo {
     );
 
     let arrastrando = false;
+    let midiendo = false;
     let ultimoX = 0;
     let ultimoY = 0;
 
@@ -203,8 +210,13 @@ export class Lienzo {
 
       if (!desplaza) {
         if (e.button === 0) {
-          const r = this.nodo.getBoundingClientRect();
-          this.alMuestrear?.(this.muestrear(e.clientX - r.left, e.clientY - r.top));
+          // Se captura el puntero para poder seguir leyendo mientras se
+          // arrastra: recorrer la foto con el botón pulsado y ver el color
+          // cambiar es lo que convierte el cuentagotas en una herramienta y
+          // no en un botón que escribe un número.
+          midiendo = true;
+          this.canvas.setPointerCapture(e.pointerId);
+          this.leerBajoElCursor(e);
         }
         return;
       }
@@ -221,6 +233,10 @@ export class Lienzo {
     });
 
     this.canvas.addEventListener("pointermove", (e) => {
+      if (midiendo) {
+        this.leerBajoElCursor(e);
+        return;
+      }
       if (!arrastrando) return;
       this.cx -= (e.clientX - ultimoX) / this.zoom;
       this.cy -= (e.clientY - ultimoY) / this.zoom;
@@ -231,6 +247,11 @@ export class Lienzo {
     });
 
     const soltar = (e: PointerEvent) => {
+      if (midiendo) {
+        midiendo = false;
+        this.canvas.releasePointerCapture(e.pointerId);
+        return;
+      }
       if (!arrastrando) return;
       arrastrando = false;
       this.canvas.releasePointerCapture(e.pointerId);

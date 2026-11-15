@@ -611,7 +611,36 @@ body {
 }
 
 .estado__pantalla {
-  min-width: 164px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 214px;
+}
+
+.estado__rotulo {
+  font-family: var(--fuente);
+}
+
+/*
+ * El cuadradito con el color leído.
+ *
+ * Es lo único de la barra de estado que se ve con el rabillo del ojo, y por
+ * eso está: la primera versión solo escribía los números, y desde el lienzo
+ * no había manera de notar que el cuentagotas había leído algo.
+ */
+.estado__muestra {
+  width: 13px;
+  height: 13px;
+  border: 1px solid var(--borde-fuerte);
+  border-radius: 2px;
+}
+
+.estado__muestra--con-color {
+  border-color: var(--texto-tenue);
+}
+
+.estado__pantalla--con-color .estado__cifras {
+  color: var(--texto);
 }
 
 .estado__zoom {
