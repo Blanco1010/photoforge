@@ -14,14 +14,14 @@ Este README explica **por qué** está hecho así. El qué se lee en el código.
 
 ## Qué hace hoy
 
-Abre JPG, PNG y TIFF de 8 o 16 bits. Los pinta en un lienzo con zoom y
-desplazamiento, enseña sus metadatos EXIF y su histograma, aplica exposición y
-contraste de forma no destructiva, compara el antes y el después manteniendo
+Abre **RAW de cámara** (DNG, CR2, CR3, NEF, ARW, RAF, RW2, ORF y más), JPG,
+PNG y TIFF de 8 o 16 bits. Los pinta en un lienzo con zoom y desplazamiento,
+enseña sus metadatos EXIF y su histograma, aplica exposición, curva de luces y
+contraste de forma no destructiva, compara con cómo se abrió manteniendo
 pulsado un botón, deshace y rehace, y exporta a JPEG, PNG o TIFF de 16 bits.
 
-Lo que **no** hace todavía: abrir RAW desde la aplicación, capas, máscaras,
-selecciones y guardar proyectos. El apartado [Lo que falta](#lo-que-falta) dice
-en qué orden y por qué.
+Lo que **no** hace todavía: capas, máscaras, selecciones y guardar proyectos.
+El apartado [Lo que falta](#lo-que-falta) dice en qué orden y por qué.
 
 ---
 
@@ -116,6 +116,99 @@ cualquiera puede recompilar**.
 Si algún día PhotoForge se vendiera cerrado, esto habría que rehacerlo: o
 `flashraw` (MIT, mucho más verde) o `rawler` en un proceso aparte. Queda dicho
 para que la decisión no sorprenda a nadie más adelante.
+
+---
+
+## Revelar un RAW
+
+Un RAW no se puede «enseñar»: hay que revelarlo. Estos son los tres pasos que
+PhotoForge le hace a un archivo de cámara nada más abrirlo, y por qué.
+
+### 1. Normalizar a mano, porque `rawler` no lo hace con estos archivos
+
+Está contado arriba, en la prueba de riesgo. El resumen: 12 niveles de negro
+contra 3 de blanco, la comprobación de longitudes no cuadra y la normalización
+se salta en silencio. Lo hace
+[`pf_image::raw::normalizar`](crates/pf-image/src/raw.rs), que además mira
+antes si ya estaba hecha: si algún día arreglan `rawler`, esto no normalizará
+dos veces, y no por acordarse sino por construcción.
+
+### 2. Una exposición de partida, calculada y a la vista
+
+Medido sobre cinco DNG del S25 Ultra, los valores crudos ocupan entre el 2 % y
+el 45 % del techo del sensor. Enseñar eso tal cual da una foto oscura, y
+cualquiera pensaría que algo se rompió en vez de que falta revelarla.
+
+Así que al abrir se calcula cuánta exposición hace falta. **Con un percentil
+alto y no con la media**: la media la arrastra lo que más superficie ocupa, así
+que una foto con fondo negro saldría quemada y una con nieve, gris. El
+percentil 99,5 mira dónde están las luces, que es lo que no se puede
+recuperar, y deja fuera el 0,5 % más brillante a propósito — una farola o un
+reflejo DEBEN quemarse, y si contaran bastaría uno para dejar la foto entera
+subexpuesta.
+
+Lo que sale de ahí **no es magia escondida**: entra en la lista de operaciones
+como una exposición normal, aparece en su deslizador y se puede mover o
+quitar. Sobre las cinco fotos de prueba salen entre +1,06 y +5,78 pasos, y
+ninguna de las cinco queda con un solo píxel quemado.
+
+### 3. Doblar las luces en vez de cortarlas
+
+Al subir cinco pasos de exposición, todo lo que se pasa de 1,0 se recortaría:
+un cielo con nubes se convertiría en una mancha blanca plana. La curva de
+luces hace lo que hacía la película —acercarse al blanco sin llegar—, con dos
+condiciones que la hacen honrada:
+
+- **Por debajo de 0,75 no toca absolutamente nada.** Las curvas tipo Reinhard
+  comprimen también los medios tonos, y entonces activarlas oscurece una foto
+  que ya estaba bien. Con un codo, activar la curva no puede estropear la
+  parte de la foto que te gustaba.
+- **Encaja con pendiente 1 justo en el codo**, así que no hay esquina ni se ve
+  una banda en la transición.
+
+Es una casilla y no un deslizador porque lo único regulable sería dónde está
+el codo, y eso no se puede juzgar mirando la foto: el efecto solo ocurre en el
+puñado de píxeles más brillantes. Un control que no se puede juzgar es un
+control que nadie mueve.
+
+Lo que la curva **no** puede hacer está escrito igual de claro en el código:
+en `f32` deja de distinguir diferencias finas por encima de 3,1 y satura en
+1,0 a partir de 4,7. Salva un cielo sobreexpuesto un par de pasos; lo que esté
+por encima ya no cabe en el número.
+
+### «Antes» es como se abrió, no la imagen cruda
+
+Lo evidente sería que el botón de comparar enseñara la foto sin ninguna
+operación. Para un JPEG lo es. Para un RAW no: sin operaciones, un RAW son
+fotones medidos y se ve casi negro, así que comparar contra eso no enseña lo
+que acabas de hacer — enseña lo que hace un RAW sin revelar.
+
+Así que «Antes» es **como se abrió la foto**, con su exposición de partida y
+su curva. Es exactamente lo mismo contra lo que vuelve «Restablecer»: si las
+dos cosas significaran cosas distintas, el programa se estaría contradiciendo.
+
+### Y la foto sale derecha
+
+Una cámara de móvil no gira los píxeles cuando giras el teléfono: los guarda
+siempre igual y apunta aparte cómo hay que verlos. Ni `rawler` ni la caja
+`image` aplican ese dato, así que sin hacerlo la mitad de las fotos salen
+tumbadas — es el fallo que apareció en cuanto se abrió la segunda foto de
+prueba.
+
+PhotoForge lo aplica **al abrir**, y a partir de ahí el resto del programa
+trabaja con una imagen que ya está derecha. La alternativa —arrastrar la
+orientación por todo el programa y girar solo al pintar— obliga a que el
+lienzo, el histograma, el recorte y la exportación se acuerden de ella, y
+alguno se olvidará.
+
+### Lo que está probado y lo que no
+
+Las cifras y el comportamiento de arriba salen de **cinco DNG de Expert RAW de
+un Galaxy S25 Ultra**, que son los archivos reales que había. Los demás
+formatos pasan exactamente por el mismo código de `rawler` —el que usa DNGLab
+a diario— pero **no se han podido comprobar aquí contra archivos de verdad**.
+Se ofrecen en el diálogo de abrir; si alguno falla, el fallo es de este
+proyecto y no de quien lo use.
 
 ---
 
@@ -323,9 +416,13 @@ usa LTO completo y una sola unidad de codegen.
 cargo test
 ```
 
-46 pruebas: 43 del núcleo, que corren en centésimas de segundo porque no
+65 pruebas: 62 del núcleo, que corren en centésimas de segundo porque no
 arrastran Tauri, y 3 de integración que recorren una sesión entera —abrir,
 ajustar, comparar, deshacer, exportar— contra el estado real de la aplicación.
+
+Lo que esas pruebas **no** cubren es abrir un RAW: los archivos de prueba son
+fotos del autor, pesan veinte megas cada una y no están en el repositorio.
+Para eso está la sonda, que se corre a mano contra tus propios archivos.
 
 Solo el núcleo, que es lo que se toca a menudo:
 
@@ -344,6 +441,8 @@ crates/
     color.rs        sRGB <-> lineal, con sus tablas
     carga.rs        JPG, PNG, TIFF -> Imagen
     muestreo.rs     el recorte y escalado de la vista
+    orientacion.rs  poner la foto derecha
+    raw.rs          RAW de cámara: normalizar, revelar y exponer
     histograma.rs   256 columnas y el recuento de recorte
     metadatos.rs    EXIF
     exportar.rs     JPEG, PNG, TIFF de 16 bits
@@ -389,9 +488,9 @@ sobre píxeles**. Si hace falta uno, su sitio es `pf-image`.
 
 En el orden en que tiene sentido hacerlo, y con el motivo del orden:
 
-1. **Abrir RAW desde la aplicación.** El camino está probado y medido; lo que
-   falta es la curva de tono, sin la cual un RAW lineal se ve oscuro y
-   parecería que algo va mal. Por eso no entra hasta que entre la curva.
+1. **Una cáscara de verdad**: barra de menús, columna de herramientas y
+   paneles acoplables. Hoy la interfaz es una barra de botones, y eso se
+   queda corto en cuanto haya más de tres ajustes.
 2. **Más operaciones de revelado**: luces, sombras, blancos, negros,
    temperatura y tinte. Cuando sean ocho o diez, el enum `Operacion` empezará a
    molestar y será el momento de partirlo; hoy no.
@@ -408,6 +507,6 @@ En el orden en que tiene sentido hacerlo, y con el motivo del orden:
 
 [MIT](LICENSE).
 
-PhotoForge usa [`rawler`](https://github.com/dnglab/dnglab) (LGPL-2.1) en su
-ejemplo de decodificación de RAW. El apartado de la prueba de riesgo explica
+PhotoForge usa [`rawler`](https://github.com/dnglab/dnglab) (LGPL-2.1) para
+decodificar RAW. El apartado de la prueba de riesgo explica
 qué implica eso y qué habría que cambiar si el proyecto dejara de ser abierto.

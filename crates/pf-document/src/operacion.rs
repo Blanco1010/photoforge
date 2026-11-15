@@ -18,6 +18,21 @@ pub enum Operacion {
     Exposicion { pasos: f32 },
     /// Contraste, de -100 a +100. El 0 no toca nada.
     Contraste { cantidad: f32 },
+    /// Dobla las luces en vez de cortarlas. Es una casilla, no un
+    /// deslizador.
+    ///
+    /// Por qué sin deslizador: lo único que se podría regular es dónde
+    /// empieza el codo, y eso es una decisión que nadie puede juzgar mirando
+    /// la foto —el efecto solo se ve en el puñado de píxeles más brillantes—.
+    /// Un control que no se puede juzgar es un control que se deja donde
+    /// venía, así que vale más una casilla honrada.
+    ///
+    /// Por qué lleva `activa` en vez de estar o no estar en la lista: así
+    /// apagarla pasa por la MISMA puerta que devolver un deslizador a cero
+    /// —`Documento::ajustar` con algo neutro—, en vez de necesitar un camino
+    /// aparte para quitar operaciones que solo usaría esta.
+    #[serde(rename = "curva")]
+    CurvaDeTono { activa: bool },
 }
 
 /// Nombre corto de la clase de operación, sin sus parámetros.
@@ -33,6 +48,7 @@ impl Operacion {
         match self {
             Operacion::Exposicion { .. } => "exposicion",
             Operacion::Contraste { .. } => "contraste",
+            Operacion::CurvaDeTono { .. } => "curva",
         }
     }
 
@@ -45,6 +61,7 @@ impl Operacion {
         match self {
             Operacion::Exposicion { pasos } => *pasos == 0.0,
             Operacion::Contraste { cantidad } => *cantidad == 0.0,
+            Operacion::CurvaDeTono { activa } => !*activa,
         }
     }
 
@@ -63,7 +80,8 @@ impl Operacion {
     pub fn orden(&self) -> u8 {
         match self {
             Operacion::Exposicion { .. } => 10,
-            Operacion::Contraste { .. } => 20,
+            Operacion::CurvaDeTono { .. } => 20,
+            Operacion::Contraste { .. } => 30,
         }
     }
 }
@@ -80,6 +98,7 @@ pub fn aplicar(operaciones: &[Operacion], img: &mut Imagen) {
         match *op {
             Operacion::Exposicion { pasos } => exposicion(img, pasos),
             Operacion::Contraste { cantidad } => contraste(img, cantidad),
+            Operacion::CurvaDeTono { .. } => curva_de_tono(img),
         }
     }
 }
@@ -101,6 +120,21 @@ fn exposicion(img: &mut Imagen, pasos: f32) {
     img.datos_mut().par_chunks_mut(4096).for_each(|trozo| {
         for v in trozo {
             *v *= factor;
+        }
+    });
+}
+
+/// Curva de tono: doblar las luces en vez de cortarlas.
+///
+/// Todo el razonamiento está en [`pf_image::color::doblar_luces`]; aquí solo
+/// se recorre la imagen. Se aplica canal a canal y no sobre la luminancia a
+/// propósito: comprimir los tres canales por igual mantiene el tono, mientras
+/// que comprimir solo la luminancia dejaría los canales que ya iban pasados
+/// por encima de los otros y teñiría las luces.
+fn curva_de_tono(img: &mut Imagen) {
+    img.datos_mut().par_chunks_mut(4096).for_each(|trozo| {
+        for v in trozo {
+            *v = color::doblar_luces(*v);
         }
     });
 }
@@ -199,6 +233,39 @@ mod pruebas {
         for v in canal_rojo(&img) {
             assert!((v - pivote).abs() < 1e-5, "quedó {v} y no el pivote {pivote}");
         }
+    }
+
+    #[test]
+    fn la_curva_de_tono_salva_las_luces_sin_tocar_los_medios() {
+        let mut img = imagen(&[0.18, 0.5, 1.4, 4.0]);
+        aplicar(&[Operacion::CurvaDeTono { activa: true }], &mut img);
+        let v = canal_rojo(&img);
+        assert_eq!(v[0], 0.18, "el gris medio no se puede mover");
+        assert_eq!(v[1], 0.5, "medio punto tampoco");
+        assert!(v[2] < 1.0 && v[2] > 0.75, "1,4 tenía que doblarse, salió {}", v[2]);
+        assert!(v[3] <= 1.0, "4,0 no se puede pasar del blanco, salió {}", v[3]);
+        assert!(v[3] > v[2], "dos luces distintas tienen que seguir siendo distintas");
+        // Y con la exposición dentro del rango que la curva promete salvar
+        // (ver `pf_image::color::doblar_luces`), nada se queda pegado al tope.
+        assert!(v[2] < 1.0, "1,4 no debería llegar al blanco, salió {}", v[2]);
+    }
+
+    #[test]
+    fn el_orden_mete_la_curva_entre_la_exposicion_y_el_contraste() {
+        // Si la curva fuera después del contraste, subir el contraste podría
+        // volver a sacar las luces del rango y quemarlas.
+        assert!(Operacion::Exposicion { pasos: 1.0 }.orden() < Operacion::CurvaDeTono { activa: true }.orden());
+        assert!(Operacion::CurvaDeTono { activa: true }.orden() < Operacion::Contraste { cantidad: 1.0 }.orden());
+    }
+
+    #[test]
+    fn la_curva_apagada_es_neutra_y_por_eso_se_quita_sola() {
+        assert!(Operacion::CurvaDeTono { activa: false }.es_neutra());
+        assert!(!Operacion::CurvaDeTono { activa: true }.es_neutra());
+        let partida = imagen(&[0.1, 3.0]);
+        let mut img = partida.clone();
+        aplicar(&[Operacion::CurvaDeTono { activa: false }], &mut img);
+        assert_eq!(img.datos(), partida.datos());
     }
 
     #[test]

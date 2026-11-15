@@ -11,7 +11,11 @@ import { invoke } from "@tauri-apps/api/core";
 
 export type Operacion =
   | { clase: "exposicion"; pasos: number }
-  | { clase: "contraste"; cantidad: number };
+  | { clase: "contraste"; cantidad: number }
+  | { clase: "curva"; activa: boolean };
+
+/** De dónde vienen los píxeles: un RAW sin interpretar o un archivo ya revelado. */
+export type Procedencia = "revelada" | "escena";
 
 export interface CampoExif {
   etiqueta: string;
@@ -36,6 +40,7 @@ export interface Ficha {
   alto: number;
   megapixeles: number;
   megabytes_en_memoria: number;
+  procedencia: Procedencia;
   metadatos: Metadatos;
   operaciones: Operacion[];
   puede_deshacer: boolean;

@@ -1,36 +1,80 @@
 //! Abrir un archivo y convertirlo en `Imagen`.
+//!
+//! Hay una sola puerta —[`cargar`]— y es ella quien decide si el archivo va
+//! por el camino de `image` (JPEG, PNG, TIFF) o por el de `rawler` (RAW de
+//! cámara). Quien llama no tiene que saber de qué tipo es el archivo, y por
+//! eso no hay dos funciones parecidas que alguien pueda confundir.
 
 use std::path::Path;
 
 use image::DynamicImage;
-use pf_core::{Dimensiones, Error, Resultado};
+use pf_core::{Dimensiones, Error, Procedencia, Resultado};
 use rayon::prelude::*;
 
 use crate::{CANALES, Imagen, color};
 
-/// Extensiones que PhotoForge sabe abrir hoy.
+/// Formatos ya revelados que PhotoForge sabe abrir.
+pub const EXTENSIONES_REVELADAS: &[&str] = &["jpg", "jpeg", "png", "tif", "tiff"];
+
+/// Todas las extensiones, para el diálogo de abrir.
 ///
-/// Está aquí y no repartida por la interfaz para que el diálogo de «Abrir» y
-/// la comprobación del backend no puedan desincronizarse. El día que entre
-/// RAW, se añade aquí y los dos sitios se enteran.
-pub const EXTENSIONES: &[&str] = &["jpg", "jpeg", "png", "tif", "tiff"];
+/// Se construye aquí y no en la interfaz para que el filtro del diálogo y la
+/// comprobación del backend no puedan desincronizarse: el día que entre un
+/// formato nuevo, los dos sitios se enteran de una vez.
+pub fn extensiones() -> Vec<&'static str> {
+    EXTENSIONES_REVELADAS
+        .iter()
+        .chain(crate::raw::EXTENSIONES.iter())
+        .copied()
+        .collect()
+}
 
 pub fn extension_soportada(ruta: &Path) -> bool {
+    es_revelada(ruta) || crate::raw::es_raw(ruta)
+}
+
+fn es_revelada(ruta: &Path) -> bool {
     ruta.extension()
         .and_then(|e| e.to_str())
-        .map(|e| EXTENSIONES.contains(&e.to_ascii_lowercase().as_str()))
+        .map(|e| EXTENSIONES_REVELADAS.contains(&e.to_ascii_lowercase().as_str()))
         .unwrap_or(false)
+}
+
+/// El resultado de abrir un archivo: los píxeles y lo que hace falta saber
+/// sobre ellos para tratarlos bien.
+#[derive(Debug)]
+pub struct Cargada {
+    pub imagen: Imagen,
+    pub procedencia: Procedencia,
+    /// Qué cámara lo hizo, según el propio RAW. Para los archivos ya
+    /// revelados esto viene del EXIF y no de aquí.
+    pub camara: Option<String>,
+    /// Si el archivo traía mosaico de Bayer y hubo que reconstruir el color.
+    pub con_mosaico: bool,
+    /// Cómo venía girada la foto. Ya está aplicada sobre los píxeles.
+    pub orientacion: crate::orientacion::Orientacion,
 }
 
 /// Carga un archivo y lo deja en RGB lineal.
 ///
-/// Por qué se mira la extensión antes de intentarlo: `image` intenta adivinar
-/// el formato por los primeros bytes y, con un archivo que no es una imagen,
+/// Por qué se mira la extensión antes de intentarlo: `image` adivina el
+/// formato por los primeros bytes y, con un archivo que no es una imagen,
 /// devuelve un error interno sobre cabeceras que no le dice nada a nadie.
 /// Vale más un «esto no es un formato que yo sepa abrir» con el nombre del
 /// archivo delante.
-pub fn cargar(ruta: &Path) -> Resultado<Imagen> {
-    if !extension_soportada(ruta) {
+pub fn cargar(ruta: &Path) -> Resultado<Cargada> {
+    if crate::raw::es_raw(ruta) {
+        let (imagen, ficha) = crate::raw::cargar(ruta)?;
+        return Ok(Cargada {
+            imagen,
+            procedencia: Procedencia::Escena,
+            camara: Some(ficha.camara).filter(|c| !c.is_empty()),
+            con_mosaico: ficha.con_mosaico,
+            orientacion: ficha.orientacion,
+        });
+    }
+
+    if !es_revelada(ruta) {
         return Err(Error::FormatoNoSoportado(
             ruta.extension()
                 .and_then(|e| e.to_str())
@@ -39,14 +83,27 @@ pub fn cargar(ruta: &Path) -> Resultado<Imagen> {
         ));
     }
 
+    let fallo = |causa: String| Error::Lectura { ruta: ruta.display().to_string(), causa };
     let decodificada = image::ImageReader::open(ruta)
-        .map_err(|e| Error::Lectura { ruta: ruta.display().to_string(), causa: e.to_string() })?
+        .map_err(|e| fallo(e.to_string()))?
         .with_guessed_format()
-        .map_err(|e| Error::Lectura { ruta: ruta.display().to_string(), causa: e.to_string() })?
+        .map_err(|e| fallo(e.to_string()))?
         .decode()
-        .map_err(|e| Error::Lectura { ruta: ruta.display().to_string(), causa: e.to_string() })?;
+        .map_err(|e| fallo(e.to_string()))?;
 
-    desde_dynamic(decodificada)
+    // El mismo problema que en el RAW: un JPEG de móvil guarda los píxeles
+    // siempre en el mismo sentido y apunta aparte cómo hay que girarlos. La
+    // caja `image` no lo aplica sola.
+    let orientacion = crate::metadatos::orientacion(ruta);
+    let imagen = crate::orientacion::enderezar(desde_dynamic(decodificada)?, orientacion)?;
+
+    Ok(Cargada {
+        imagen,
+        procedencia: Procedencia::Revelada,
+        camara: None,
+        con_mosaico: false,
+        orientacion,
+    })
 }
 
 /// Convierte lo que devuelve `image` en una `Imagen`.
@@ -102,8 +159,19 @@ mod pruebas {
     fn se_reconocen_las_extensiones_sin_importar_las_mayusculas() {
         assert!(extension_soportada(Path::new("foto.JPG")));
         assert!(extension_soportada(Path::new("foto.tiff")));
-        assert!(!extension_soportada(Path::new("foto.dng")));
+        assert!(extension_soportada(Path::new("foto.dng")));
+        assert!(!extension_soportada(Path::new("foto.pdf")));
         assert!(!extension_soportada(Path::new("foto")));
+    }
+
+    #[test]
+    fn la_lista_del_dialogo_lleva_los_dos_mundos_y_sin_repetidos() {
+        let e = extensiones();
+        assert!(e.contains(&"jpg") && e.contains(&"dng"));
+        let mut ordenadas = e.clone();
+        ordenadas.sort_unstable();
+        ordenadas.dedup();
+        assert_eq!(ordenadas.len(), e.len(), "hay una extensión repetida en la lista");
     }
 
     #[test]
@@ -126,12 +194,13 @@ mod pruebas {
         buf.put_pixel(2, 0, image::Rgb([255, 255, 255]));
         buf.save(&ruta).unwrap();
 
-        let img = cargar(&ruta).unwrap();
-        assert_eq!(img.ancho(), 3);
+        let c = cargar(&ruta).unwrap();
+        assert_eq!(c.procedencia, Procedencia::Revelada);
+        assert_eq!(c.imagen.ancho(), 3);
         // El gris 118 tiene que haber entrado como ~0,18 de luz lineal.
-        let medio = img.datos()[3];
+        let medio = c.imagen.datos()[3];
         assert!((medio - 0.18).abs() < 0.005, "el gris medio entró como {medio}");
-        assert_eq!(img.a_rgb8(), vec![0, 0, 0, 118, 118, 118, 255, 255, 255]);
+        assert_eq!(c.imagen.a_rgb8(), vec![0, 0, 0, 118, 118, 118, 255, 255, 255]);
 
         std::fs::remove_file(&ruta).ok();
     }

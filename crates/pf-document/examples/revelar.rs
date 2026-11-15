@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use pf_core::{Dimensiones, Region};
-use pf_document::{Documento, Operacion};
+use pf_document::{Documento, Operacion, Revelado};
 
 /// El tamaño de vista contra el que se mide: una ventana de 1.600 × 900 en una
 /// pantalla sin escalado. Es el caso normal, no el mejor ni el peor.
@@ -27,13 +27,14 @@ fn main() {
     // Los dos ajustes son parámetros y no constantes porque un JPEG ya
     // revelado y un TIFF salido de un RAW lineal piden exposiciones muy
     // distintas, y el ejemplo tiene que servir para los dos.
-    let valor = |nombre: &str, por_omision: f32| -> f32 {
-        args.iter()
-            .find_map(|a| a.strip_prefix(nombre).and_then(|v| v.parse().ok()))
-            .unwrap_or(por_omision)
+    // Si no se pasan, NO se tocan: un RAW se abre con su exposición de
+    // partida ya puesta, y forzar un cero la quitaría —que es lo correcto
+    // cuando lo pide el usuario, y justo lo que no se quiere al medir—.
+    let valor = |nombre: &str| -> Option<f32> {
+        args.iter().find_map(|a| a.strip_prefix(nombre).and_then(|v| v.parse().ok()))
     };
-    let ev = valor("--ev=", 0.8);
-    let contraste = valor("--contraste=", 25.0);
+    let ev = valor("--ev=");
+    let contraste = valor("--contraste=");
     let rutas: Vec<PathBuf> = args.iter().filter(|a| !a.starts_with("--")).map(PathBuf::from).collect();
 
     if rutas.is_empty() {
@@ -49,7 +50,7 @@ fn main() {
     }
 }
 
-fn revelar(ruta: &Path, exportar: bool, ev: f32, contraste: f32) -> pf_core::Resultado<()> {
+fn revelar(ruta: &Path, exportar: bool, ev: Option<f32>, contraste: Option<f32>) -> pf_core::Resultado<()> {
     let reloj = Instant::now();
     let mut doc = Documento::abrir(ruta)?;
     let ms_abrir = reloj.elapsed().as_millis();
@@ -83,12 +84,16 @@ fn revelar(ruta: &Path, exportar: bool, ev: f32, contraste: f32) -> pf_core::Res
 
     // La vista sin tocar nada: solo recortar y escalar.
     let reloj = Instant::now();
-    std::hint::black_box(doc.vista(region, destino, false));
+    std::hint::black_box(doc.vista(region, destino, Revelado::ComoSeAbrio));
     let ms_vista = reloj.elapsed().as_millis();
 
-    doc.ajustar(Operacion::Exposicion { pasos: ev });
-    doc.ajustar(Operacion::Contraste { cantidad: contraste });
-    println!("  ajustes aplicados: {ev:+.2} EV y contraste {contraste:+.0}");
+    if let Some(ev) = ev {
+        doc.ajustar(Operacion::Exposicion { pasos: ev });
+    }
+    if let Some(c) = contraste {
+        doc.ajustar(Operacion::Contraste { cantidad: c });
+    }
+    println!("  procedencia: {:?} · ajustes: {:?}", doc.procedencia(), doc.operaciones());
 
     // Y la vista revelada, que es lo que cuesta cada movimiento del
     // deslizador. Se mide tres veces y se queda con la mediana: la primera
@@ -96,14 +101,14 @@ fn revelar(ruta: &Path, exportar: bool, ev: f32, contraste: f32) -> pf_core::Res
     let mut tiempos = Vec::new();
     for _ in 0..3 {
         let reloj = Instant::now();
-        let revelada = doc.vista(region, destino, true);
+        let revelada = doc.vista(region, destino, Revelado::Actual);
         tiempos.push(reloj.elapsed().as_secs_f64() * 1000.0);
         std::hint::black_box(revelada);
     }
     tiempos.sort_by(f64::total_cmp);
 
     // Y lo que cuesta pasarlo a bytes para el lienzo.
-    let revelada = doc.vista(region, destino, true);
+    let revelada = doc.vista(region, destino, Revelado::Actual);
     let reloj = Instant::now();
     let bytes = revelada.a_rgba8();
     let ms_rgba = reloj.elapsed().as_secs_f64() * 1000.0;
@@ -130,7 +135,7 @@ fn revelar(ruta: &Path, exportar: bool, ev: f32, contraste: f32) -> pf_core::Res
 
     // La prueba que importa de verdad: el original sigue intacto.
     let copia = doc.original().datos()[..9].to_vec();
-    let _ = doc.completa(true);
+    let _ = doc.completa(Revelado::Actual);
     assert_eq!(&doc.original().datos()[..9], copia.as_slice());
     println!("  el original sigue sin tocarse después de todo lo anterior");
 
@@ -140,7 +145,7 @@ fn revelar(ruta: &Path, exportar: bool, ev: f32, contraste: f32) -> pf_core::Res
             ruta.file_stem().unwrap_or_default().to_string_lossy()
         ));
         let reloj = Instant::now();
-        let completa = doc.completa(true);
+        let completa = doc.completa(Revelado::Actual);
         let ms_revelar = reloj.elapsed().as_millis();
         let reloj = Instant::now();
         pf_image::exportar::exportar(&completa, &salida, pf_image::exportar::Formato::Jpeg { calidad: 92 })?;

@@ -10,16 +10,11 @@ rust-version.workspace = true
 
 [dependencies]
 pf-core = { workspace = true }
+# La decodificación de RAW. Es el motor de DNGLab: Rust puro, sin FFI y sin
+# compilar nada en C, que era la condición para que esto funcionara en Windows
+# con MSVC sin pelearse. Licencia LGPL-2.1; el README explica qué implica.
+rawler = "0.8.0"
 image = { workspace = true }
 kamadak-exif = { workspace = true }
 rayon = { workspace = true }
 serde = { workspace = true }
-
-[dev-dependencies]
-# rawler es la biblioteca con la que PhotoForge leerá RAW. Está aquí como
-# dependencia de DESARROLLO y no de producción a propósito: el ejemplo
-# `sonda-raw` la usa para documentar con números lo que hace y lo que no, pero
-# la aplicación todavía no abre RAW, y una dependencia que no se usa son 80
-# cajas más que compilar y una licencia LGPL que explicar sin ganar nada.
-# El día que PhotoForge abra RAW de verdad, esta línea sube a [dependencies].
-rawler = "0.8.0"

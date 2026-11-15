@@ -82,6 +82,34 @@ impl fmt::Display for Dimensiones {
     }
 }
 
+/// De dónde vienen los píxeles de una imagen.
+///
+/// # Por qué hace falta distinguirlo
+///
+/// Un JPEG ya está revelado: alguien —la cámara o un programa— decidió su
+/// brillo, su contraste y cómo se tratan las luces, y los números que trae
+/// describen lo que debe salir por la pantalla. Un RAW no: sus números son
+/// cuántos fotones llegaron al sensor, sin interpretar.
+///
+/// La diferencia no es académica. A un RAW hay que colocarlo en el rango de
+/// la pantalla antes de poder mirarlo, y sin hacerlo se ve oscuro aunque esté
+/// perfectamente expuesto. A un JPEG hacerle lo mismo sería aplicarle dos
+/// veces una interpretación que ya tenía.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Procedencia {
+    /// JPEG, PNG, TIFF: ya revelada, lista para la pantalla.
+    Revelada,
+    /// RAW de cámara: luz medida, todavía sin interpretar.
+    Escena,
+}
+
+impl Procedencia {
+    pub fn es_escena(&self) -> bool {
+        matches!(self, Procedencia::Escena)
+    }
+}
+
 /// Un rectángulo en coordenadas de imagen, en píxeles y con decimales.
 ///
 /// Por qué con decimales y no con enteros: este rectángulo describe el trozo

@@ -15,8 +15,8 @@
 
 use std::path::PathBuf;
 
-use pf_core::{Dimensiones, Error, Region, Resultado};
-use pf_document::{Documento, Operacion};
+use pf_core::{Dimensiones, Error, Procedencia, Region, Resultado};
+use pf_document::{Documento, Operacion, Revelado};
 use pf_image::histograma::Histograma;
 use pf_image::metadatos::Metadatos;
 
@@ -36,6 +36,9 @@ pub struct Ficha {
     pub alto: u32,
     pub megapixeles: f32,
     pub megabytes_en_memoria: u32,
+    /// Si la foto viene de un RAW o de un archivo ya revelado. La interfaz lo
+    /// enseña porque cambia lo que significan los ajustes de partida.
+    pub procedencia: Procedencia,
     pub metadatos: Metadatos,
     pub operaciones: Vec<Operacion>,
     pub puede_deshacer: bool,
@@ -45,6 +48,13 @@ pub struct Ficha {
 
 fn ficha_de(d: &Documento) -> Ficha {
     let dim = d.dim();
+    let mut metadatos = d.metadatos().clone();
+    // Un RAW suele traer EXIF, pero el modelo viene en crudo («SM-S938B») y
+    // a veces ni eso. El decodificador lo da ya limpio y comparable entre
+    // marcas, así que se prefiere cuando existe.
+    if let Some(camara) = d.camara_del_raw() {
+        metadatos.camara = Some(camara.to_string());
+    }
     Ficha {
         ruta: d.ruta().display().to_string(),
         nombre: d
@@ -56,7 +66,8 @@ fn ficha_de(d: &Documento) -> Ficha {
         alto: dim.alto,
         megapixeles: dim.pixeles() as f32 / 1_000_000.0,
         megabytes_en_memoria: (d.bytes_en_memoria() / 1_048_576) as u32,
-        metadatos: d.metadatos().clone(),
+        procedencia: d.procedencia(),
+        metadatos,
         operaciones: d.operaciones().to_vec(),
         puede_deshacer: d.puede_deshacer(),
         puede_rehacer: d.puede_rehacer(),
@@ -84,7 +95,7 @@ pub fn ficha(estado: tauri::State<'_, Estado>) -> Resultado<Ficha> {
 
 #[tauri::command]
 pub fn extensiones_soportadas() -> Vec<&'static str> {
-    pf_image::carga::EXTENSIONES.to_vec()
+    pf_image::carga::extensiones()
 }
 
 /// Lo que la interfaz pide para pintar un cuadro.
@@ -100,6 +111,8 @@ pub struct Peticion {
     pub alto_region: f32,
     pub ancho: u32,
     pub alto: u32,
+    /// `false` pide la foto como se abrió, que es lo que enseña el botón de
+    /// «Antes». Para un RAW eso NO es la imagen cruda: ver `pf_document::Revelado`.
     pub con_operaciones: bool,
 }
 
@@ -126,7 +139,8 @@ pub fn renderizar(
         alto: peticion.alto_region.max(1.0),
     };
 
-    let bytes = estado.con(|d| d.vista(region, destino, peticion.con_operaciones).a_rgba8())?;
+        let que = if peticion.con_operaciones { Revelado::Actual } else { Revelado::ComoSeAbrio };
+    let bytes = estado.con(|d| d.vista(region, destino, que).a_rgba8())?;
     Ok(tauri::ipc::Response::new(bytes))
 }
 
@@ -201,7 +215,7 @@ pub fn exportar(
         });
     }
 
-    let imagen = estado.con(|d| d.completa(true))?;
+    let imagen = estado.con(|d| d.completa(Revelado::Actual))?;
     pf_image::exportar::exportar(&imagen, &destino, formato)?;
     Ok(destino.display().to_string())
 }

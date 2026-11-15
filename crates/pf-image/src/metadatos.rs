@@ -2,6 +2,8 @@
 
 use std::path::Path;
 
+use crate::orientacion::Orientacion;
+
 /// Un campo EXIF ya traducido a texto.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CampoExif {
@@ -94,6 +96,30 @@ pub fn leer(ruta: &Path) -> Metadatos {
 
     m.completo.sort_by(|a, b| a.etiqueta.cmp(&b.etiqueta));
     m
+}
+
+/// Lee solo la etiqueta de orientación.
+///
+/// Por qué una función aparte en vez de un campo de [`Metadatos`]: la
+/// orientación hace falta en el momento de cargar los píxeles, antes de que
+/// exista el documento, mientras que el resto de los metadatos solo se
+/// necesitan para enseñarlos. Juntarlas obligaría a leer y traducir los cien
+/// campos de un JPEG de móvil para enterarse de un número.
+///
+/// Un archivo sin la etiqueta devuelve «derecha», que es lo correcto: lo que
+/// no dice cómo hay que girarse es porque no hay que girarlo.
+pub fn orientacion(ruta: &Path) -> Orientacion {
+    let Ok(archivo) = std::fs::File::open(ruta) else {
+        return Orientacion::DERECHA;
+    };
+    let mut lector = std::io::BufReader::new(archivo);
+    let Ok(exif) = exif::Reader::new().read_from_container(&mut lector) else {
+        return Orientacion::DERECHA;
+    };
+    exif.get_field(exif::Tag::Orientation, exif::In::PRIMARY)
+        .and_then(|f| f.value.get_uint(0))
+        .map(|v| Orientacion::desde_exif(v as u16))
+        .unwrap_or(Orientacion::DERECHA)
 }
 
 #[cfg(test)]

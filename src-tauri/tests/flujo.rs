@@ -13,7 +13,7 @@
 use std::path::PathBuf;
 
 use pf_core::{Dimensiones, Region};
-use pf_document::{Documento, Operacion};
+use pf_document::{Documento, Operacion, Revelado};
 use photoforge_lib::estado::Estado;
 
 /// Fabrica una foto de prueba con un degradado reconocible.
@@ -53,7 +53,7 @@ fn el_flujo_de_una_sesion_entera_funciona() {
     let destino = Dimensiones::nueva(200, 150).unwrap();
     let region = Region { x: 0.0, y: 0.0, ancho: 64.0, alto: 48.0 };
     let sin_tocar = estado
-        .con(|d| d.vista(region, destino, true).a_rgba8())
+        .con(|d| d.vista(region, destino, Revelado::Actual).a_rgba8())
         .unwrap();
     assert_eq!(sin_tocar.len(), 200 * 150 * 4, "el lienzo pide RGBA del tamaño exacto");
     assert!(sin_tocar.chunks(4).all(|p| p[3] == 255), "el alfa tiene que salir opaco");
@@ -63,20 +63,20 @@ fn el_flujo_de_una_sesion_entera_funciona() {
         .con_mut(|d| d.ajustar(Operacion::Exposicion { pasos: 1.0 }))
         .unwrap();
     let revelado = estado
-        .con(|d| d.vista(region, destino, true).a_rgba8())
+        .con(|d| d.vista(region, destino, Revelado::Actual).a_rgba8())
         .unwrap();
     assert_ne!(revelado, sin_tocar, "subir un paso de exposición tiene que cambiar el cuadro");
 
     // 3. Y pulsa «Antes»: tiene que volver exactamente al cuadro de partida.
     let comparando = estado
-        .con(|d| d.vista(region, destino, false).a_rgba8())
+        .con(|d| d.vista(region, destino, Revelado::ComoSeAbrio).a_rgba8())
         .unwrap();
     assert_eq!(comparando, sin_tocar, "el «antes» tiene que ser el cuadro original clavado");
 
     // 4. Deshace.
     estado.con_mut(|d| d.deshacer()).unwrap();
     let deshecho = estado
-        .con(|d| d.vista(region, destino, true).a_rgba8())
+        .con(|d| d.vista(region, destino, Revelado::Actual).a_rgba8())
         .unwrap();
     assert_eq!(deshecho, sin_tocar);
 
@@ -85,7 +85,7 @@ fn el_flujo_de_una_sesion_entera_funciona() {
     estado
         .con_mut(|d| d.ajustar(Operacion::Contraste { cantidad: 60.0 }))
         .unwrap();
-    let _ = estado.con(|d| d.completa(true)).unwrap();
+    let _ = estado.con(|d| d.completa(Revelado::Actual)).unwrap();
     assert_eq!(std::fs::read(&ruta).unwrap(), antes, "el archivo original se ha tocado");
 
     // 6. Cerrar libera el documento.
@@ -105,7 +105,7 @@ fn exportar_escribe_un_archivo_que_se_puede_volver_a_abrir() {
         .unwrap();
 
     let salida = ruta.with_file_name("exportable-revelado.tif");
-    let imagen = estado.con(|d| d.completa(true)).unwrap();
+    let imagen = estado.con(|d| d.completa(Revelado::Actual)).unwrap();
     pf_image::exportar::exportar(&imagen, &salida, pf_image::exportar::Formato::Tiff16).unwrap();
 
     let reabierto = Documento::abrir(&salida).unwrap();

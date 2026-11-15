@@ -118,7 +118,7 @@ mod pruebas {
     fn el_png_exportado_se_vuelve_a_leer_con_los_mismos_valores() {
         let ruta = dir().join("ida_y_vuelta.png");
         exportar(&imagen_gris(), &ruta, Formato::Png).unwrap();
-        let leida = crate::carga::cargar(&ruta).unwrap();
+        let leida = crate::carga::cargar(&ruta).unwrap().imagen;
         assert_eq!(leida.dim(), imagen_gris().dim());
         assert!((leida.datos()[0] - 0.18).abs() < 0.005);
         std::fs::remove_file(&ruta).ok();
@@ -134,12 +134,12 @@ mod pruebas {
 
         let png = dir().join("precision.png");
         exportar(&img, &png, Formato::Png).unwrap();
-        let bytes = crate::carga::cargar(&png).unwrap().a_rgb8();
+        let bytes = crate::carga::cargar(&png).unwrap().imagen.a_rgb8();
         assert_eq!(bytes[0], bytes[3], "en 8 bits los dos valores deberían colapsar");
 
         let tif = dir().join("precision.tif");
         exportar(&img, &tif, Formato::Tiff16).unwrap();
-        let leido = crate::carga::cargar(&tif).unwrap();
+        let leido = crate::carga::cargar(&tif).unwrap().imagen;
         assert_ne!(leido.datos()[0], leido.datos()[3], "en 16 bits no deberían colapsar");
 
         std::fs::remove_file(&png).ok();

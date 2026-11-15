@@ -169,12 +169,34 @@ class Deslizador {
   }
 }
 
+/** Una casilla con su etiqueta. Para lo que está o no está. */
+class Casilla {
+  readonly nodo: HTMLLabelElement;
+  private readonly entrada: HTMLInputElement;
+
+  constructor(etiqueta: string, ayuda: string, private readonly alCambiar: (v: boolean) => void) {
+    this.entrada = el("input", { clase: "casilla__control", type: "checkbox" });
+    this.entrada.addEventListener("change", () => this.alCambiar(this.entrada.checked));
+    this.nodo = el(
+      "label",
+      { clase: "casilla", titulo: ayuda },
+      this.entrada,
+      el("span", { clase: "casilla__etiqueta", texto: etiqueta }),
+    );
+  }
+
+  poner(valor: boolean): void {
+    this.entrada.checked = valor;
+  }
+}
+
 export class Panel {
   readonly nodo: HTMLElement;
   private readonly histograma = new DibujoHistograma();
   private readonly avisoRecorte: HTMLParagraphElement;
   private readonly exposicion: Deslizador;
   private readonly contraste: Deslizador;
+  private readonly curva: Casilla;
   private readonly resumen: HTMLDListElement;
   private readonly listaExif: HTMLDivElement;
   private readonly detalleExif: HTMLDetailsElement;
@@ -186,8 +208,12 @@ export class Panel {
 
     this.exposicion = new Deslizador(
       "Exposición",
-      -5,
-      5,
+      // ±6 y no ±5: la exposición automática de un RAW puede llegar a +6
+      // pasos, y con el tope en 5 el deslizador enseñaría 5,00 sobre una foto
+      // que lleva 5,12. Un control que miente sobre lo que hay es peor que no
+      // tenerlo.
+      -6,
+      6,
       0.05,
       (v) => `${v > 0 ? "+" : ""}${v.toFixed(2)} EV`,
       (v) => this.alAjustar({ clase: "exposicion", pasos: v }, false),
@@ -201,6 +227,14 @@ export class Panel {
       (v) => `${v > 0 ? "+" : ""}${v.toFixed(0)}`,
       (v) => this.alAjustar({ clase: "contraste", cantidad: v }, false),
       () => this.alAjustar({ clase: "contraste", cantidad: Number(this.valorContraste()) }, true),
+    );
+
+    // La curva de luces: una casilla y no un deslizador. El porqué está en
+    // `Operacion::CurvaDeTono`, en el lado de Rust.
+    this.curva = new Casilla(
+      "Doblar las luces",
+      "En vez de cortar lo que se pasa de blanco, lo dobla para que no se queme. Los medios tonos no se tocan.",
+      (v) => this.alAjustar({ clase: "curva", activa: v }, true),
     );
 
     this.resumen = el("dl", { clase: "metadatos__resumen" });
@@ -228,6 +262,7 @@ export class Panel {
         el("h2", { clase: "panel__titulo", texto: "Revelado" }),
         this.exposicion.nodo,
         this.contraste.nodo,
+        this.curva.nodo,
       ),
       el(
         "section",
@@ -259,8 +294,10 @@ export class Panel {
   sincronizar(ficha: Ficha | null): void {
     const exp = ficha?.operaciones.find((o) => o.clase === "exposicion");
     const con = ficha?.operaciones.find((o) => o.clase === "contraste");
+    const cur = ficha?.operaciones.find((o) => o.clase === "curva");
     this.exposicion.poner(exp && exp.clase === "exposicion" ? exp.pasos : 0, false);
     this.contraste.poner(con && con.clase === "contraste" ? con.cantidad : 0, false);
+    this.curva.poner(cur?.clase === "curva" && cur.activa);
     this.ponerMetadatos(ficha);
   }
 
@@ -290,6 +327,12 @@ export class Panel {
 
     const m = ficha.metadatos;
     const filas: [string, string | null][] = [
+      [
+        "Origen",
+        ficha.procedencia === "escena"
+          ? "RAW de cámara (luz medida, sin interpretar)"
+          : "archivo ya revelado",
+      ],
       ["Tamaño", `${ficha.ancho} × ${ficha.alto} · ${ficha.megapixeles.toFixed(1)} Mpx`],
       ["En memoria", `${ficha.megabytes_en_memoria} MB en RGB lineal`],
       ["Cámara", m.camara],
@@ -332,7 +375,7 @@ export class Panel {
   /** Apaga los ajustes cuando no hay nada abierto. */
   habilitar(activo: boolean): void {
     for (const r of this.nodo.querySelectorAll<HTMLInputElement | HTMLButtonElement>(
-      ".deslizador__rango, .deslizador__cero",
+      ".deslizador__rango, .deslizador__cero, .casilla__control",
     )) {
       r.disabled = !activo;
     }

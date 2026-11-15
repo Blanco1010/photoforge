@@ -28,6 +28,65 @@ pub fn lineal_a_srgb(v: f32) -> f32 {
     }
 }
 
+/// Donde empieza a doblarse la curva de luces.
+///
+/// Por debajo de este valor no se toca nada. Se eligió 0,75 porque es donde
+/// una foto deja de tener detalle que juzgar y empieza a tener brillo: el
+/// gris medio está en 0,18 y una piel clara bien expuesta ronda 0,45, así que
+/// a 0,75 ya solo quedan reflejos, cielos y fuentes de luz.
+pub const CODO_DE_LUCES: f32 = 0.75;
+
+/// Dobla las luces en vez de cortarlas.
+///
+/// # Qué problema resuelve
+///
+/// Al subir la exposición de un RAW, las luces se pasan de 1,0 y se recortan:
+/// un cielo con nubes se convierte en una mancha blanca plana, y el borde
+/// entre lo que se recortó y lo que no se ve como un escalón. Es el aspecto
+/// que delata a una foto mal revelada.
+///
+/// Esta curva hace lo que hacía la película: en vez de cortar en 1,0, se va
+/// acercando sin llegar nunca, así que por mucho que se suba la exposición
+/// siempre queda algo de diferencia entre dos luces distintas.
+///
+/// # Por qué con un codo y no una curva en todo el rango
+///
+/// Las curvas tipo Reinhard —`x / (1 + x)` y sus parientes— comprimen también
+/// los medios tonos: aplicarlas oscurece una foto que ya estaba bien. Con un
+/// codo, todo lo que está por debajo de [`CODO_DE_LUCES`] **sale exactamente
+/// igual que entró**, y solo se dobla lo que iba a quemarse. Activar la curva
+/// no puede estropear la parte de la foto que ya te gustaba.
+///
+/// La forma es exponencial porque encaja con pendiente 1 justo en el codo: la
+/// curva y la recta se tocan sin esquina, así que no aparece una banda en la
+/// transición.
+///
+/// # Hasta dónde llega de verdad
+///
+/// Sobre el papel la curva se acerca a 1,0 sin tocarlo nunca. En `f32` no, y
+/// conviene saber dónde está el límite de verdad:
+///
+/// - Hasta una entrada de **3,1** —un paso y medio por encima del blanco—
+///   dos valores separados por una milésima siguen saliendo distintos.
+/// - Entre 3,1 y **4,7** la curva sigue creciendo, pero ya solo distingue
+///   diferencias cada vez más gruesas: la mantisa de un `f32` se queda sin
+///   bits cerca de 1,0.
+/// - A partir de 4,7 el resultado es exactamente 1,0.
+///
+/// Es decir: la curva salva lo que se puede salvar de un cielo sobreexpuesto
+/// un par de pasos, y por encima de eso no hay nada que salvar porque la
+/// información ya no cabe en el número. Se dice aquí porque es el tipo de
+/// límite que, si no está escrito, alguien descubre un día con una foto rara
+/// y cree que es un fallo.
+#[inline]
+pub fn doblar_luces(v: f32) -> f32 {
+    if v <= CODO_DE_LUCES {
+        return v;
+    }
+    let margen = 1.0 - CODO_DE_LUCES;
+    CODO_DE_LUCES + margen * (1.0 - (-(v - CODO_DE_LUCES) / margen).exp())
+}
+
 /// Tabla de entrada para los archivos de 8 bits.
 ///
 /// Por qué una tabla: `srgb_a_lineal` lleva una `powf`, y una `powf` cuesta
@@ -181,6 +240,68 @@ mod pruebas {
         assert_eq!(t.a_byte(-5.0), 0);
         assert_eq!(t.a_byte(f32::INFINITY), 255);
         assert_eq!(t.a_byte(100.0), 255);
+    }
+
+    #[test]
+    fn la_curva_de_luces_no_toca_lo_que_esta_por_debajo_del_codo() {
+        // Es la propiedad que justifica el codo: activar la curva no puede
+        // cambiar los medios tonos de una foto que ya estaba bien.
+        for v in [0.0, 0.01, 0.18, 0.45, 0.74, CODO_DE_LUCES] {
+            assert_eq!(doblar_luces(v), v, "la curva movió {v}");
+        }
+    }
+
+    #[test]
+    fn la_curva_de_luces_nunca_se_pasa_de_uno() {
+        for v in [0.8, 1.0, 1.5, 4.0, 100.0, 1e6, f32::MAX] {
+            let y = doblar_luces(v);
+            assert!(y <= 1.0, "con {v} salió {y}, que se pasa del blanco");
+            assert!(y > CODO_DE_LUCES);
+        }
+    }
+
+    #[test]
+    fn la_curva_de_luces_salva_el_rango_que_dice_salvar() {
+        // Hasta 4,5 —dos pasos y pico por encima del blanco— dos luces
+        // distintas tienen que seguir saliendo distintas. Esta prueba es la
+        // que fija el límite que documenta `doblar_luces`.
+        for v in [1.0f32, 1.5, 2.0, 3.0, 4.0] {
+            assert!(
+                doblar_luces(v) < doblar_luces(v + 0.4),
+                "a la altura de {v} la curva ya no distingue"
+            );
+        }
+        // Y a partir de ahí se reconoce que junta: no se promete lo que no se
+        // cumple.
+        assert_eq!(doblar_luces(8.0), doblar_luces(80.0));
+    }
+
+    #[test]
+    fn la_curva_de_luces_es_creciente_y_sin_esquina() {
+        // Creciente: dos luces distintas siguen siendo distintas, que es todo
+        // el objetivo. Sin esquina: la pendiente a los dos lados del codo
+        // tiene que ser casi la misma, o se vería una banda justo ahí.
+        // Hasta 3,1 crece de verdad, milésima a milésima.
+        let mut anterior = -1.0;
+        for i in 0..3100 {
+            let v = i as f32 / 1000.0;
+            let y = doblar_luces(v);
+            assert!(y > anterior, "la curva dejó de crecer en {v}");
+            anterior = y;
+        }
+        // Y de ahí arriba, al menos nunca baja. Lo que no puede pasar es que
+        // una luz más alta salga más oscura: eso sí se vería, como un halo
+        // raro en el centro de una fuente de luz.
+        for i in 3100..20_000 {
+            let v = i as f32 / 1000.0;
+            let y = doblar_luces(v);
+            assert!(y >= anterior, "la curva bajó en {v}");
+            anterior = y;
+        }
+        let d = 1e-4;
+        let antes = (doblar_luces(CODO_DE_LUCES) - doblar_luces(CODO_DE_LUCES - d)) / d;
+        let despues = (doblar_luces(CODO_DE_LUCES + d) - doblar_luces(CODO_DE_LUCES)) / d;
+        assert!((antes - despues).abs() < 0.01, "esquina en el codo: {antes} vs {despues}");
     }
 
     #[test]

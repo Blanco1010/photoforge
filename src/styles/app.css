@@ -318,6 +318,29 @@ body {
   background: var(--texto-tenue);
 }
 
+.casilla {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 14px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.casilla__control {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--acento);
+  cursor: pointer;
+}
+
+.casilla__control:disabled,
+.casilla:has(.casilla__control:disabled) {
+  opacity: 0.35;
+  cursor: default;
+}
+
 /* ---------- Metadatos ---------- */
 
 .metadatos__resumen {

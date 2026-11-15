@@ -31,6 +31,8 @@ pub mod exportar;
 pub mod histograma;
 pub mod metadatos;
 pub mod muestreo;
+pub mod orientacion;
+pub mod raw;
 
 use pf_core::{Dimensiones, Error, Resultado};
 

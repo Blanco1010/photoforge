@@ -24,10 +24,29 @@ pub mod operacion;
 
 use std::path::{Path, PathBuf};
 
-use pf_core::{Dimensiones, Region, Resultado};
+use pf_core::{Dimensiones, Procedencia, Region, Resultado};
 use pf_image::{Imagen, histograma::Histograma, metadatos::Metadatos};
 
 pub use operacion::{Clase, Operacion};
+
+/// Qué versión de la foto se quiere.
+///
+/// Existe por el botón de «Antes». Lo evidente sería que «antes» fuera la
+/// foto sin ninguna operación, y para un JPEG lo es. Para un RAW no: sin
+/// operaciones, un RAW son fotones medidos y se ve casi negro, así que
+/// comparar contra eso no enseña lo que acabas de hacer, enseña lo que hace
+/// un RAW sin revelar.
+///
+/// Así que «antes» es **como se abrió la foto**, con sus ajustes de partida.
+/// Es lo mismo contra lo que vuelve «Restablecer», y las dos cosas tienen que
+/// significar lo mismo o el programa se contradice a sí mismo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Revelado {
+    /// Con los ajustes que hay ahora mismo.
+    Actual,
+    /// Con los ajustes con los que se abrió.
+    ComoSeAbrio,
+}
 
 /// Cuántos pasos atrás se guardan.
 ///
@@ -43,24 +62,75 @@ pub struct Documento {
     /// si alguna vez hace falta un `&mut` sobre esto, algo se ha torcido.
     original: Imagen,
     metadatos: Metadatos,
+    procedencia: Procedencia,
+    /// Lo que la cámara dice de sí misma en un RAW. Un JPEG trae esto en el
+    /// EXIF; un RAW también, pero el decodificador lo da ya limpio y en un
+    /// formato comparable entre marcas.
+    camara_del_raw: Option<String>,
+    con_mosaico: bool,
     operaciones: Vec<Operacion>,
+    /// Los ajustes con los que nació el documento.
+    ///
+    /// Un RAW no se abre con la lista vacía: se abre con una exposición de
+    /// partida y la curva de luces, porque sin eso se vería oscuro. Guardar
+    /// aquí ese punto de partida es lo que permite que «Restablecer» devuelva
+    /// la foto a como se abrió y no a unos datos crudos que parecerían rotos.
+    iniciales: Vec<Operacion>,
     deshacer: Vec<Vec<Operacion>>,
     rehacer: Vec<Vec<Operacion>>,
 }
 
 impl Documento {
     /// Abre un archivo.
+    ///
+    /// Un RAW no sale de aquí con la lista de operaciones vacía. Sus números
+    /// son fotones medidos y enseñarlos tal cual da una foto oscura, así que
+    /// se le ponen dos ajustes de partida: la exposición que calcula
+    /// [`pf_image::raw::exposicion_sugerida`] y la curva de luces.
+    ///
+    /// Los dos van en la lista normal, se ven en sus controles y se pueden
+    /// quitar. PhotoForge no tiene ajustes escondidos: lo que cambia la foto
+    /// está siempre a la vista.
     pub fn abrir(ruta: &Path) -> Resultado<Self> {
-        let original = pf_image::carga::cargar(ruta)?;
+        let cargada = pf_image::carga::cargar(ruta)?;
         let metadatos = pf_image::metadatos::leer(ruta);
+
+        let iniciales = if cargada.procedencia.es_escena() {
+            let mut v = vec![Operacion::CurvaDeTono { activa: true }];
+            let pasos = pf_image::raw::exposicion_sugerida(&cargada.imagen);
+            if pasos != 0.0 {
+                v.push(Operacion::Exposicion { pasos });
+            }
+            v.sort_by_key(|o| o.orden());
+            v
+        } else {
+            Vec::new()
+        };
+
         Ok(Self {
             ruta: ruta.to_path_buf(),
-            original,
+            original: cargada.imagen,
             metadatos,
-            operaciones: Vec::new(),
+            procedencia: cargada.procedencia,
+            camara_del_raw: cargada.camara,
+            con_mosaico: cargada.con_mosaico,
+            operaciones: iniciales.clone(),
+            iniciales,
             deshacer: Vec::new(),
             rehacer: Vec::new(),
         })
+    }
+
+    pub fn procedencia(&self) -> Procedencia {
+        self.procedencia
+    }
+
+    pub fn camara_del_raw(&self) -> Option<&str> {
+        self.camara_del_raw.as_deref()
+    }
+
+    pub fn con_mosaico(&self) -> bool {
+        self.con_mosaico
     }
 
     pub fn ruta(&self) -> &Path {
@@ -83,8 +153,19 @@ impl Documento {
         self.original.bytes()
     }
 
+    /// ¿Se ha tocado algo desde que se abrió?
+    ///
+    /// Se compara con los ajustes de partida y no con la lista vacía: un RAW
+    /// recién abierto YA tiene exposición y curva, y decir que «hay cambios»
+    /// nada más abrirlo sería mentir y encendería el botón de comparar sin
+    /// que haya nada que comparar.
     pub fn hay_cambios(&self) -> bool {
-        !self.operaciones.is_empty()
+        self.operaciones != self.iniciales
+    }
+
+    /// Los ajustes con los que se abrió, que es a donde vuelve «Restablecer».
+    pub fn iniciales(&self) -> &[Operacion] {
+        &self.iniciales
     }
 
     pub fn puede_deshacer(&self) -> bool {
@@ -123,12 +204,16 @@ impl Documento {
         true
     }
 
-    /// Quita todas las operaciones y deja la foto como salió de la cámara.
+    /// Devuelve la foto a como se abrió.
+    ///
+    /// Para un JPEG eso es la lista vacía. Para un RAW es su exposición de
+    /// partida y su curva: dejarlo en crudo enseñaría una foto negra y
+    /// parecería que el botón rompió algo.
     pub fn restablecer(&mut self) -> bool {
-        if self.operaciones.is_empty() {
+        if self.operaciones == self.iniciales {
             return false;
         }
-        let anterior = std::mem::take(&mut self.operaciones);
+        let anterior = std::mem::replace(&mut self.operaciones, self.iniciales.clone());
         self.apuntar(anterior);
         true
     }
@@ -177,27 +262,29 @@ impl Documento {
     /// Primero se recorta y se escala, después se revela. El orden importa
     /// mucho: al revés habría que revelar la foto entera para tirar el 97 %.
     ///
-    /// `con_operaciones` a `false` da el original muestreado igual, que es lo
-    /// que necesita el botón de «antes»: la misma región, el mismo tamaño y
-    /// el mismo muestreo, para que la comparación sea honrada y no mezcle la
-    /// diferencia del revelado con la diferencia del reescalado.
-    pub fn vista(&self, region: Region, destino: Dimensiones, con_operaciones: bool) -> Imagen {
+    /// Los dos revelados se muestrean EXACTAMENTE igual —misma región, mismo
+    /// tamaño, mismo filtro—, para que la comparación enseñe la diferencia
+    /// del revelado y no la del reescalado.
+    pub fn vista(&self, region: Region, destino: Dimensiones, que: Revelado) -> Imagen {
         let mut img = pf_image::muestreo::muestrear(&self.original, region, destino);
-        if con_operaciones {
-            operacion::aplicar(&self.operaciones, &mut img);
-        }
+        operacion::aplicar(self.lista(que), &mut img);
         img
+    }
+
+    fn lista(&self, que: Revelado) -> &[Operacion] {
+        match que {
+            Revelado::Actual => &self.operaciones,
+            Revelado::ComoSeAbrio => &self.iniciales,
+        }
     }
 
     /// La foto entera revelada, a resolución completa. Para exportar.
     ///
     /// Este es el único sitio donde se paga el coste completo, y se paga una
     /// vez por exportación.
-    pub fn completa(&self, con_operaciones: bool) -> Imagen {
+    pub fn completa(&self, que: Revelado) -> Imagen {
         let mut img = self.original.clone();
-        if con_operaciones {
-            operacion::aplicar(&self.operaciones, &mut img);
-        }
+        operacion::aplicar(self.lista(que), &mut img);
         img
     }
 
@@ -212,7 +299,7 @@ impl Documento {
     /// millón de píxeles como mucho; lo caro aquí es aplicar las operaciones
     /// sobre la foto entera. Por eso existe `histograma_rapido`.
     pub fn histograma(&self) -> Histograma {
-        pf_image::histograma::calcular(&self.completa(true))
+        pf_image::histograma::calcular(&self.completa(Revelado::Actual))
     }
 
     /// El histograma calculado sobre una versión reducida de la foto.
@@ -235,7 +322,7 @@ impl Documento {
         )
         .expect("la reducción no puede dar cero: está forzada a 1 como mínimo");
         let region = Region { x: 0.0, y: 0.0, ancho: dim.ancho as f32, alto: dim.alto as f32 };
-        pf_image::histograma::calcular(&self.vista(region, reducida, true))
+        pf_image::histograma::calcular(&self.vista(region, reducida, Revelado::Actual))
     }
 }
 
@@ -271,11 +358,11 @@ mod pruebas {
 
         d.ajustar(Operacion::Exposicion { pasos: 2.0 });
         d.ajustar(Operacion::Contraste { cantidad: 80.0 });
-        let _ = d.completa(true);
+        let _ = d.completa(Revelado::Actual);
         let _ = d.vista(
             Region { x: 0.0, y: 0.0, ancho: 16.0, alto: 16.0 },
             Dimensiones::nueva(8, 8).unwrap(),
-            true,
+            Revelado::Actual,
         );
         d.ajustar(Operacion::Exposicion { pasos: -3.0 });
 
@@ -312,7 +399,7 @@ mod pruebas {
         b.ajustar(Operacion::Contraste { cantidad: 40.0 });
         b.ajustar(Operacion::Exposicion { pasos: 1.0 });
 
-        assert_eq!(a.completa(true).datos(), b.completa(true).datos());
+        assert_eq!(a.completa(Revelado::Actual).datos(), b.completa(Revelado::Actual).datos());
     }
 
     #[test]
@@ -353,9 +440,9 @@ mod pruebas {
         let region = Region { x: 0.0, y: 0.0, ancho: 16.0, alto: 16.0 };
         let destino = Dimensiones::nueva(5, 5).unwrap();
 
-        let antes = d.vista(region, destino, false);
+        let antes = d.vista(region, destino, Revelado::ComoSeAbrio);
         d.ajustar(Operacion::Exposicion { pasos: 0.0 }); // neutra: no cambia nada
-        let despues = d.vista(region, destino, true);
+        let despues = d.vista(region, destino, Revelado::Actual);
 
         assert_eq!(antes.datos(), despues.datos());
         assert_eq!(antes.dim(), destino);
@@ -392,8 +479,8 @@ mod pruebas {
             d.ajustar(Operacion::Exposicion { pasos: 1.0 });
             d
         };
-        let revelada = d.completa(true);
-        let sin_revelar = d.completa(false);
+        let revelada = d.completa(Revelado::Actual);
+        let sin_revelar = d.completa(Revelado::ComoSeAbrio);
         assert_ne!(revelada.datos(), sin_revelar.datos());
         assert_eq!(revelada.datos().len(), d.dim().pixeles() * CANALES);
     }
