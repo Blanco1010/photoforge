@@ -79,7 +79,10 @@ class Aplicacion {
   private readonly grupos: GrupoMenu[];
 
   constructor(raiz: HTMLElement) {
-    this.panel = new Panel((op, definitivo) => void this.ajustar(op, definitivo));
+    this.panel = new Panel(
+      (op, definitivo) => void this.ajustar(op, definitivo),
+      (f) => this.tras(f),
+    );
     this.histograma = new PeticionHistograma(this.panel);
     this.grupos = this.menus();
     this.menu = new Menu(this.grupos, () => this.ficha);
@@ -122,6 +125,13 @@ class Aplicacion {
     this.herramientas.alCambiar = (h) => {
       this.lienzo.ponerHerramienta(h);
       this.estado.ponerHerramienta(h);
+      // Elegir la herramienta despliega su sección, así que las dos puertas
+      // al degradado llevan al mismo sitio y enseñan lo mismo.
+      if (h === "degradado") this.panel.abrirDegradado();
+    };
+    this.panel.alVerDegradado = (v) => this.lienzo.ponerAdorno(v);
+    this.lienzo.alDegradar = (desde, hasta, definitivo) => {
+      void api.ponerDegradado(desde, hasta, definitivo).then((f) => this.tras(f));
     };
     this.herramientas.alComparar = (activo) => {
       this.lienzo.comparar(activo);
@@ -130,6 +140,7 @@ class Aplicacion {
 
     this.conectarTeclado();
     this.sincronizar();
+    this.lienzo.ponerAdorno(this.panel.degradadoALaVista);
     void api.extensiones().then((e) => (this.extensiones = e));
     void this.recuperar();
   }
@@ -203,6 +214,17 @@ class Aplicacion {
             alias: { ctrl: true, mayus: true, tecla: "z" },
             activa: (f) => !!f?.puede_rehacer,
             hacer: () => void this.paso(api.rehacer),
+          },
+          {
+            // Se enciende solo cuando hay uno, igual que «Como venía el
+            // archivo»: no es un control muerto, es uno que espera. Y va por
+            // la tabla y no escrito a mano en el teclado, para que borrar el
+            // degradado tenga una puerta que SE VE.
+            id: "quitar-degradado",
+            texto: "Quitar el degradado",
+            atajo: { tecla: "Delete" },
+            activa: (f) => f?.degradado != null,
+            hacer: () => void api.quitarDegradado().then((f) => this.tras(f)),
           },
           {
             // «Restablecer el revelado» y no «Restablecer» a secas: en un
@@ -420,6 +442,19 @@ class Aplicacion {
    * recorrer la foto entera sesenta veces por segundo para enseñar un número
    * que el usuario no va a leer hasta que suelte.
    */
+  /**
+   * Lo que hay que hacer con una ficha recién llegada de un comando.
+   *
+   * Lo comparten el degradado y el deslizador de su luz, que son los dos
+   * caminos que no pasan por `ajustar`.
+   */
+  private tras(f: Ficha): void {
+    this.ficha = f;
+    this.herramientas.sincronizar(f);
+    this.panel.sincronizar(f);
+    this.lienzo.actualizar(f);
+  }
+
   private async ajustar(op: Operacion, definitivo: boolean): Promise<void> {
     if (!this.ficha) return;
     try {

@@ -12,7 +12,7 @@
  * 2 Mpx que con una de 50: el trabajo depende del tamaño de la ventana.
  */
 
-import { api, type Ficha } from "../lib/api";
+import { api, type Degradado, type Ficha, type Punto } from "../lib/api";
 import { el, porCuadro } from "../lib/dom";
 import type { Herramienta } from "./herramientas";
 
@@ -23,6 +23,11 @@ export interface InfoVista {
   ms: number;
 }
 
+/** Arrastre mínimo, en píxeles de pantalla, para crear un degradado. */
+const ARRASTRE_MINIMO = 12;
+/** A qué distancia de un tirador se considera que lo has agarrado. */
+const RADIO_DE_ACIERTO = 10;
+
 /** Hasta dónde se puede ampliar. 32× ya enseña el píxel como un cuadrado. */
 const ZOOM_MAXIMO = 32;
 /** Y hasta dónde alejar: por debajo de esto no se distingue nada. */
@@ -32,6 +37,27 @@ export class Lienzo {
   readonly nodo: HTMLDivElement;
   private readonly canvas: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D;
+  /**
+   * El lienzo de los adornos: las líneas y los tiradores del degradado.
+   *
+   * # Por qué un segundo lienzo y no pintar encima del primero
+   *
+   * Tres motivos, y el primero es un fallo concreto: el cuentagotas lee
+   * `getImageData` del lienzo pintado, así que una raya dibujada ahí se
+   * leería como si fuera el color de la foto al pinchar encima.
+   *
+   * El segundo: el bucle de `unCuadro` protege que borrar y pintar ocurran
+   * sin un `await` en medio, y mover una línea obligaría a guardar y reponer
+   * los 5,7 MB del último cuadro, además de hacer que el tirador heredara la
+   * latencia del puente con Rust.
+   *
+   * El tercero: con el adorno inerte al ratón (`pointer-events: none`),
+   * TODOS los eventos siguen llegando al lienzo de la foto, así que la
+   * captura del puntero, el botón central que desplaza siempre, la rueda
+   * anclada y el doble clic no se tocan ni una línea.
+   */
+  private readonly adorno: HTMLCanvasElement;
+  private readonly ctxAdorno: CanvasRenderingContext2D;
 
   private ficha: Ficha | null = null;
   /** Píxeles de pantalla (CSS) por píxel de imagen. */
@@ -43,6 +69,19 @@ export class Lienzo {
   private comparando = false;
   /** Qué hace el botón izquierdo. El central siempre desplaza. */
   private herramienta: Herramienta = "mano";
+  /** El degradado puesto, en coordenadas de la foto como se ve. */
+  private degradado: Degradado | null = null;
+  /** Mientras es `false` no se dibuja el adorno. Lo manda el panel. */
+  private verAdorno = false;
+  /** El gesto que se está haciendo con el ratón, si hay alguno. */
+  private gesto: {
+    cual: "crear" | "desde" | "hasta" | "medio";
+    desde: Punto;
+    hasta: Punto;
+    /** Dónde se pulsó, para el mínimo de arrastre y para el tirador central. */
+    origen: Punto;
+    nacido: boolean;
+  } | null = null;
 
   /**
    * Solo puede haber un render en vuelo.
@@ -59,13 +98,19 @@ export class Lienzo {
   alPintar?: (info: InfoVista) => void;
   /** El color leído por el cuentagotas, o `null` si se pinchó fuera de la foto. */
   alMuestrear?: (rgb: [number, number, number] | null) => void;
+  /** El degradado que el usuario está dibujando o moviendo. */
+  alDegradar?: (desde: Punto, hasta: Punto, definitivo: boolean) => void;
 
   constructor() {
     this.canvas = el("canvas", { clase: "lienzo__canvas" });
-    this.nodo = el("div", { clase: "lienzo" }, this.canvas);
+    this.adorno = el("canvas", { clase: "lienzo__adorno" });
+    this.nodo = el("div", { clase: "lienzo" }, this.canvas, this.adorno);
     const ctx = this.canvas.getContext("2d", { alpha: true });
     if (!ctx) throw new Error("este WebView no da un contexto 2D");
     this.ctx = ctx;
+    const ctxAdorno = this.adorno.getContext("2d");
+    if (!ctxAdorno) throw new Error("este WebView no da un contexto 2D");
+    this.ctxAdorno = ctxAdorno;
 
     this.conectarRaton();
     new ResizeObserver(porCuadro(() => this.refrescar())).observe(this.nodo);
@@ -94,13 +139,25 @@ export class Lienzo {
     const cambioLaForma =
       this.ficha?.ancho !== ficha.ancho || this.ficha?.alto !== ficha.alto;
     this.ficha = ficha;
+    // Fuera de un gesto, la geometría la manda el documento. Durante uno, la
+    // manda el ratón: si no, el adorno iría un cuadro por detrás del dedo.
+    if (!this.gesto) this.degradado = ficha.degradado;
     if (cambioLaForma) this.ajustarAVentana();
     else this.refrescar();
   }
 
+  /** Enseña o esconde las líneas del degradado. Lo decide el panel. */
+  ponerAdorno(visible: boolean): void {
+    this.verAdorno = visible;
+    this.dibujarAdorno();
+  }
+
   descargar(): void {
     this.ficha = null;
+    this.degradado = null;
+    this.gesto = null;
     this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    this.dibujarAdorno();
   }
 
   /** La foto entera dentro de la ventana, con un margen para que respire. */
@@ -130,6 +187,31 @@ export class Lienzo {
   ponerHerramienta(h: Herramienta): void {
     this.herramienta = h;
     this.canvas.classList.toggle("lienzo__canvas--cuentagotas", h === "cuentagotas");
+    this.canvas.classList.toggle("lienzo__canvas--degradado", h === "degradado");
+    this.dibujarAdorno();
+  }
+
+  /**
+   * De coordenadas de la foto a píxeles de la ventana, y al revés.
+   *
+   * Estaban escritas a mano en el manejador de la rueda y en `unCuadro`.
+   * Ahora son tres usos reales —la rueda, el cuadro y el gesto del
+   * degradado—, que es el umbral a partir del cual este proyecto extrae algo.
+   */
+  private aPantalla(p: Punto): { x: number; y: number } {
+    const r = this.nodo.getBoundingClientRect();
+    return {
+      x: (p.x - this.cx) * this.zoom + r.width / 2,
+      y: (p.y - this.cy) * this.zoom + r.height / 2,
+    };
+  }
+
+  private aImagen(mx: number, my: number): Punto {
+    const r = this.nodo.getBoundingClientRect();
+    return {
+      x: this.cx + (mx - r.width / 2) / this.zoom,
+      y: this.cy + (my - r.height / 2) / this.zoom,
+    };
   }
 
   /**
@@ -177,6 +259,7 @@ export class Lienzo {
   comparar(activo: boolean): void {
     if (this.comparando === activo) return;
     this.comparando = activo;
+    this.dibujarAdorno();
     this.refrescar();
   }
 
@@ -231,6 +314,20 @@ export class Lienzo {
       const desplaza = e.button === 1 || this.herramienta === "mano";
 
       if (!desplaza) {
+        if (e.button === 0 && this.herramienta === "degradado") {
+          const r = this.nodo.getBoundingClientRect();
+          const mx = e.clientX - r.left;
+          const my = e.clientY - r.top;
+          const p = this.aImagen(mx, my);
+          const cual = this.tiradorBajo(mx, my);
+          const d = this.degradado;
+          this.gesto =
+            cual && d
+              ? { cual, desde: d.desde, hasta: d.hasta, origen: p, nacido: true }
+              : { cual: "crear", desde: p, hasta: p, origen: p, nacido: false };
+          this.canvas.setPointerCapture(e.pointerId);
+          return;
+        }
         if (e.button === 0) {
           // Se captura el puntero para poder seguir leyendo mientras se
           // arrastra: recorrer la foto con el botón pulsado y ver el color
@@ -255,6 +352,10 @@ export class Lienzo {
     });
 
     this.canvas.addEventListener("pointermove", (e) => {
+      if (this.gesto) {
+        this.moverGesto(e);
+        return;
+      }
       if (midiendo) {
         this.leerBajoElCursor(e);
         return;
@@ -269,6 +370,13 @@ export class Lienzo {
     });
 
     const soltar = (e: PointerEvent) => {
+      if (this.gesto) {
+        const g = this.gesto;
+        this.gesto = null;
+        this.canvas.releasePointerCapture(e.pointerId);
+        if (g.nacido) this.alDegradar?.(g.desde, g.hasta, true);
+        return;
+      }
       if (midiendo) {
         midiendo = false;
         this.canvas.releasePointerCapture(e.pointerId);
@@ -283,6 +391,174 @@ export class Lienzo {
     this.canvas.addEventListener("pointercancel", soltar);
 
     this.canvas.addEventListener("dblclick", () => this.ajustarAVentana());
+
+    // Escape deshace el gesto en marcha. Sin gesto no hace nada aquí: el
+    // lienzo no es quien cierra los menús.
+    window.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape" || !this.gesto) return;
+      const nacido = this.gesto.nacido;
+      this.gesto = null;
+      this.degradado = this.ficha?.degradado ?? null;
+      this.dibujarAdorno();
+      if (nacido) this.alDegradar?.(
+        this.degradado?.desde ?? { x: 0, y: 0 },
+        this.degradado?.hasta ?? { x: 0, y: 0 },
+        true,
+      );
+      e.stopPropagation();
+    });
+  }
+
+  /** Los tres puntos agarrables, en coordenadas de la foto. */
+  private tiradores(): { cual: "desde" | "hasta" | "medio"; p: Punto }[] {
+    const d = this.degradado;
+    if (!d) return [];
+    return [
+      { cual: "desde", p: d.desde },
+      { cual: "hasta", p: d.hasta },
+      {
+        cual: "medio",
+        p: { x: (d.desde.x + d.hasta.x) / 2, y: (d.desde.y + d.hasta.y) / 2 },
+      },
+    ];
+  }
+
+  /** Cuál de los tres está bajo el puntero, si alguno. */
+  private tiradorBajo(mx: number, my: number): "desde" | "hasta" | "medio" | null {
+    if (!this.verAdorno) return null;
+    for (const t of this.tiradores()) {
+      const s = this.aPantalla(t.p);
+      if (Math.hypot(s.x - mx, s.y - my) <= RADIO_DE_ACIERTO) return t.cual;
+    }
+    return null;
+  }
+
+  private moverGesto(e: PointerEvent): void {
+    const g = this.gesto;
+    if (!g) return;
+    const r = this.nodo.getBoundingClientRect();
+    const mx = e.clientX - r.left;
+    const my = e.clientY - r.top;
+    let p = this.aImagen(mx, my);
+
+    if (g.cual === "medio") {
+      // Mover la franja entera sin tocar ni el ángulo ni la anchura.
+      const dx = p.x - g.origen.x;
+      const dy = p.y - g.origen.y;
+      const base = this.ficha?.degradado;
+      if (base) {
+        g.desde = { x: base.desde.x + dx, y: base.desde.y + dy };
+        g.hasta = { x: base.hasta.x + dx, y: base.hasta.y + dy };
+      }
+    } else {
+      // Con Mayús la dirección se fija al eje más cercano, que es el caso
+      // real de un horizonte dos grados torcido.
+      const fijo = g.cual === "crear" ? g.desde : g.cual === "desde" ? g.hasta : g.desde;
+      if (e.shiftKey) {
+        if (Math.abs(p.x - fijo.x) > Math.abs(p.y - fijo.y)) p = { x: p.x, y: fijo.y };
+        else p = { x: fijo.x, y: p.y };
+      }
+      if (g.cual === "desde") g.desde = p;
+      else g.hasta = p;
+    }
+
+    if (!g.nacido) {
+      const a = this.aPantalla(g.desde);
+      const b = this.aPantalla(g.hasta);
+      if (Math.hypot(b.x - a.x, b.y - a.y) < ARRASTRE_MINIMO) return;
+      g.nacido = true;
+    }
+
+    // El adorno se dibuja YA, sin esperar a Rust: la línea tiene que ir
+    // donde está el ratón mientras la mueves.
+    this.degradado = {
+      desde: g.desde,
+      hasta: g.hasta,
+      pasos: this.degradado?.pasos ?? 0,
+    };
+    this.dibujarAdorno();
+    this.alDegradar?.(g.desde, g.hasta, false);
+  }
+
+  /**
+   * Las dos líneas y los tres tiradores.
+   *
+   * # La regla de registro
+   *
+   * Esto se llama en exactamente dos sitios: al final de `unCuadro`, con la
+   * misma transformación que generó esos píxeles, y en cada movimiento del
+   * ratón mientras hay un gesto. O sea: la línea va donde está el ratón
+   * mientras la mueves, y donde está la FOTO en todo lo demás. Si alguien
+   * «mejora» esto redibujando también al desplazar, las líneas resbalarán
+   * sobre el horizonte y parecerá un error de cálculo.
+   */
+  private dibujarAdorno(): void {
+    const r = this.nodo.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    const ancho = Math.max(1, Math.round(r.width * dpr));
+    const alto = Math.max(1, Math.round(r.height * dpr));
+    if (this.adorno.width !== ancho || this.adorno.height !== alto) {
+      this.adorno.width = ancho;
+      this.adorno.height = alto;
+    }
+    const c = this.ctxAdorno;
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    c.clearRect(0, 0, r.width, r.height);
+
+    const d = this.degradado;
+    // Mientras se compara hay que ver la foto, no las rayas.
+    if (!d || !this.verAdorno || !this.ficha || this.comparando) return;
+
+    const a = this.aPantalla(d.desde);
+    const b = this.aPantalla(d.hasta);
+    const ex = b.x - a.x;
+    const ey = b.y - a.y;
+    const largo = Math.hypot(ex, ey) || 1;
+    // Perpendicular unitaria, estirada hasta cubrir la ventana entera.
+    const px = (-ey / largo) * (r.width + r.height);
+    const py = (ex / largo) * (r.width + r.height);
+
+    // Cada trazo se pinta dos veces, negro debajo y blanco encima: una raya
+    // de un solo color desaparece sobre un cielo blanco o sobre un suelo
+    // negro, que son justo los dos sitios donde se va a usar. Y ni un píxel
+    // de color: la interfaz es el fondo contra el que se juzga la foto.
+    const trazar = (fn: () => void, discontinua: boolean) => {
+      for (const [color, grosor] of [["rgba(0,0,0,0.45)", 3], ["rgba(255,255,255,0.9)", 1.25]] as const) {
+        c.strokeStyle = color;
+        c.lineWidth = grosor;
+        c.setLineDash(discontinua ? [6, 5] : []);
+        c.beginPath();
+        fn();
+        c.stroke();
+      }
+    };
+
+    trazar(() => {
+      c.moveTo(a.x - px, a.y - py);
+      c.lineTo(a.x + px, a.y + py);
+    }, false);
+    trazar(() => {
+      c.moveTo(b.x - px, b.y - py);
+      c.lineTo(b.x + px, b.y + py);
+    }, true);
+    c.setLineDash([]);
+    c.strokeStyle = "rgba(255,255,255,0.4)";
+    c.lineWidth = 1;
+    c.beginPath();
+    c.moveTo(a.x, a.y);
+    c.lineTo(b.x, b.y);
+    c.stroke();
+
+    for (const t of this.tiradores()) {
+      const s = this.aPantalla(t.p);
+      c.beginPath();
+      c.arc(s.x, s.y, 5, 0, Math.PI * 2);
+      c.fillStyle = "rgba(255,255,255,0.95)";
+      c.fill();
+      c.strokeStyle = "rgba(0,0,0,0.55)";
+      c.lineWidth = 1.25;
+      c.stroke();
+    }
   }
 
   /**
@@ -355,6 +631,7 @@ export class Lienzo {
       // aquí lo que hay que enseñar ES el vacío.
       this.redimensionar(anchoLienzo, altoLienzo);
       this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+      this.dibujarAdorno();
       this.alPintar?.({ zoom: this.zoom, ancho: 0, alto: 0, ms: 0 });
       return;
     }
@@ -411,6 +688,11 @@ export class Lienzo {
     // `putImageData` no pasa por la transformación del contexto, así que sus
     // coordenadas van en píxeles de dispositivo y no en píxeles CSS.
     this.ctx.putImageData(datos, Math.round(vx0 * dpr), Math.round(vy0 * dpr));
+    // El adorno, con la MISMA transformación que generó estos píxeles. Por
+    // eso va aquí y no en cualquier otro sitio: así nunca se descuadra de la
+    // foto que tiene debajo, ni al hacer zoom ni cuando un cuadro llega
+    // tarde. Y no hay ningún `await` entre el pintado y esto.
+    if (!this.gesto) this.dibujarAdorno();
 
     this.alPintar?.({ zoom: this.zoom, ancho: destinoAncho, alto: destinoAlto, ms });
   }

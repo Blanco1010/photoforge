@@ -33,7 +33,7 @@
 import type { Ficha } from "../lib/api";
 import { el, icono } from "../lib/dom";
 
-export type Herramienta = "mano" | "cuentagotas";
+export type Herramienta = "mano" | "cuentagotas" | "degradado";
 
 /** La mano abierta de Krita y Photoshop. GIMP no trae una en su caja. */
 const RUTA_MANO =
@@ -42,6 +42,10 @@ const RUTA_MANO =
 
 /** La pipeta diagonal, que esta sí es la de GIMP. */
 const RUTA_CUENTAGOTAS = "M15.5 4.5l4 4 M17.5 6.5 9 15l-1.5 4.5L3 21l1.5-4.5L13 8z";
+
+/** Una banda llena arriba, vacía abajo, con su eje en medio. */
+const RUTA_DEGRADADO = "M4 6h16 M4 18h16 M12 6v12";
+const RELLENO_DEGRADADO = "M4 6h16v6H4z";
 
 /** Un cuadro partido por la mitad. GIMP no tiene nada equivalente. */
 const RUTA_COMPARAR = "M4 5h16v14H4z M12 5v14";
@@ -69,6 +73,12 @@ export class Herramientas {
       "cuentagotas",
       RUTA_CUENTAGOTAS,
       "Cuentagotas — clic para leer el color en pantalla; el botón central sigue desplazando (C)",
+    );
+    const degradado = this.modo(
+      "degradado",
+      RUTA_DEGRADADO,
+      "Degradado — arrastra desde donde quieras el efecto entero hasta donde se acabe; el botón central sigue desplazando (D)",
+      RELLENO_DEGRADADO,
     );
 
     this.comparar = el("button", {
@@ -101,13 +111,14 @@ export class Herramientas {
       if (e.key === "Enter" || e.key === " ") soltar();
     });
 
-    this.orden.push(mano, cuentagotas, this.comparar);
+    this.orden.push(mano, cuentagotas, degradado, this.comparar);
 
     this.nodo = el(
       "div",
       { clase: "herramientas", role: "toolbar", "aria-orientation": "vertical", "aria-label": "Herramientas" },
       mano,
       cuentagotas,
+      degradado,
       // La raya no es decoración: sin ella, un botón que se mantiene pulsado
       // parece un tercer modo, y el usuario intentaría hacerle clic y soltar
       // esperando quedarse dentro.
@@ -119,7 +130,12 @@ export class Herramientas {
     this.marcar();
   }
 
-  private modo(cual: Herramienta, ruta: string, ayuda: string): HTMLButtonElement {
+  private modo(
+    cual: Herramienta,
+    ruta: string,
+    ayuda: string,
+    relleno?: string,
+  ): HTMLButtonElement {
     const b = el("button", {
       clase: "herramienta",
       type: "button",
@@ -129,7 +145,7 @@ export class Herramientas {
       "aria-pressed": "false",
       alClic: () => this.elegir(cual),
     });
-    b.append(icono(ruta));
+    b.append(icono(ruta, relleno));
     this.botones.set(cual, b);
     return b;
   }
@@ -186,6 +202,9 @@ export class Herramientas {
         return true;
       case "c":
         this.elegir("cuentagotas");
+        return true;
+      case "d":
+        this.elegir("degradado");
         return true;
       case "\\":
         if (!e.repeat) this.ponerComparar(true);

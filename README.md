@@ -17,8 +17,8 @@ Este README explica **por qué** está hecho así. El qué se lee en el código.
 Abre **RAW de cámara** (DNG, CR2, CR3, NEF, ARW, RAF, RW2, ORF y más), JPG,
 PNG y TIFF de 8 o 16 bits. Los pinta en un lienzo con zoom y desplazamiento,
 enseña sus metadatos EXIF y su histograma, revela con exposición, luces,
-sombras, blancos, negros, curva de luces y contraste, gira y voltea, todo de
-forma no destructiva, compara con cómo se abrió manteniendo
+sombras, blancos, negros, curva de luces y contraste, oscurece o aclara una
+franja con el **degradado**, gira y voltea, todo de forma no destructiva, compara con cómo se abrió manteniendo
 pulsado un botón, deshace y rehace, y exporta a JPEG, PNG o TIFF de 16 bits.
 
 Lo que **no** hace todavía: capas, máscaras, selecciones y guardar proyectos.
@@ -416,6 +416,86 @@ Las secciones no son cajones por tema: son la misma raya que dibuja
 panel enseña el orden canónico, que es la decisión más difícil de explicar del
 programa y que hasta ahora vivía escondida en un `sort_by_key`.
 
+### El degradado: el primer ajuste que sabe dónde está
+
+Las nueve operaciones de revelado son funciones del VALOR de un píxel y de
+nada más: no saben en qué parte de la foto están. El degradado sí, y es lo
+que permite bajar un cielo sin tocar el suelo.
+
+**Es una exposición que varía en el espacio**, no un segundo revelado encima
+del primero. Literalmente el cristal degradado que se pone delante del
+objetivo. Se aplica DENTRO del paso de exposición y antes de la curva de
+luces, y eso tiene una consecuencia buena: oscurecer un cielo quemado puede
+devolverle detalle, porque la curva lo recibe ya dentro del rango. Detrás de
+la curva no podría.
+
+**Un solo ajuste, la luz.** No cuatro, y la razón es de coste medido: con
+solo la exposición, el degradado se funde en la multiplicación que la pasada
+ya hacía —`*v * factor` pasa a `*v * luz`— y no entra un segundo plan, ni una
+división por píxel, ni dos tablas más peleando por la caché. Medido: 1,1 ms.
+Con el contraste y las zonas dentro habría que construir un plan anidado
+entero y volver a pagar toda la aritmética. Entrarán cuando se midan.
+
+**No es una `Operacion` de la lista**, y el motivo decide el diseño:
+`es_neutra()` dice que un importe de cero es neutro y `ajustar` lo saca de la
+lista. Con el degradado dentro, dejar el deslizador en 0 EV borraría la franja
+que acabas de dibujar y el adorno del lienzo se quedaría sin geometría. Como
+campo propio de la instantánea, su geometría sobrevive a que su luz valga
+cero, y el historial entrelazado con el giro sale gratis.
+
+**Los dos puntos se guardan en coordenadas del original.** Así el degradado
+queda pegado al contenido —giras la foto y el cielo se lleva su oscurecimiento
+con él, por construcción y no por acordarse— y los tres caminos de revelado
+quedan en el mismo mapeo sin una sola rama. Hay una prueba de que conmuta con
+el giro.
+
+La pieza nueva que lo hace posible es `Encuadre`: seis coeficientes que le
+cuentan a la pasada de dónde salió cada píxel. Son seis y no cuatro porque
+las cuatro orientaciones que trasponen hacen que la x del original dependa de
+la y del destino. Se pliega en `Plan::desde` contra la geometría del
+degradado, así que el bucle solo hace una multiplicación y una suma por
+píxel, y `ejecutar` sigue sin hacer ni una cuenta de geometría.
+
+Y una promesa que el degradado **no** rompe: la vista sigue sin ser una
+aproximación de lo que saldrá al exportar. La franja se evalúa en coordenadas
+de la foto, no de la ventana. Es la primera operación posicional del programa
+y no hay ningún asterisco que poner.
+
+Lo que sí hay que decir, y está en el tooltip del deslizador: **la franja es
+recta y no sabe lo que hay debajo**. Con un horizonte de montañas, las cumbres
+que asomen dentro de ella se oscurecen igual que el cielo. Eso no se arregla
+con esta herramienta: se arregla con una máscara de rango, que aquí no existe.
+
+### Las líneas del degradado van en un segundo lienzo
+
+Tres motivos, y el primero es un fallo concreto: el cuentagotas lee los
+píxeles del lienzo pintado, así que una raya dibujada ahí se leería como el
+color de la foto al pinchar encima. El segundo es que el bucle de pintado
+protege que borrar y pintar ocurran sin un `await` en medio, y mover una línea
+obligaría a guardar y reponer los 5,7 MB del último cuadro. El tercero es que,
+con el adorno inerte al ratón, todos los eventos siguen llegando al lienzo de
+la foto y la captura del puntero, el botón central que desplaza siempre y la
+rueda anclada no cambian ni una línea.
+
+La regla que lo mantiene cuadrado: el adorno se redibuja en **exactamente dos
+sitios** — al final del pintado, con la misma transformación que generó esos
+píxeles, y en cada movimiento del ratón mientras hay un gesto. O sea, la línea
+va donde está el ratón mientras la mueves, y donde está la foto en todo lo
+demás. Redibujarla también al desplazar haría que resbalara sobre el horizonte.
+
+### Un arrastre es un paso que deshacer, no sesenta
+
+Esto ya estaba mal antes del degradado y entró con él. Cada movimiento de un
+deslizador apuntaba un paso en el historial, así que arrastrar la exposición
+dejaba sesenta posiciones intermedias y Ctrl+Z las desandaba de una en una.
+
+Ahora los comandos llevan `definitivo`: mientras se arrastra el documento
+cambia pero el historial no, y al soltar se guarda **un** paso. El detalle que
+casi lo rompe: al soltar un deslizador el navegador manda un `change` con el
+mismo valor que el último `input`, así que si el cierre del gesto dependiera
+de que hubiera cambio, el arrastre entero se quedaría sin su paso. Hay una
+prueba que lo fija.
+
 ### El giro no es una operación de la lista, y los tres motivos importan
 
 Las nueve operaciones de revelado viven en una lista ordenada. El giro no:
@@ -601,8 +681,9 @@ Ultra, con una vista de 1.600 × 900:
 |---|---|
 | Abrir el TIFF de 16 bits y pasarlo a RGB lineal | 122 ms |
 | Muestrear la vista, sin revelar | 10 ms |
-| **Vista revelada, dos controles movidos** | **13,4 ms** |
-| **Vista revelada, seis controles movidos** | **14,5 ms** |
+| **Vista revelada, dos controles movidos** | **12,7 ms** |
+| **Vista revelada, seis controles movidos** | **15,1 ms** |
+| Vista revelada con un degradado puesto | 13,8 ms |
 | Pasar la vista a RGBA de 8 bits para el lienzo | 2,8 ms |
 | Histograma rápido (786.000 muestras) | 19 ms |
 | Histograma completo (1.040.000 muestras) | 86 ms |
@@ -618,9 +699,9 @@ Los 13 ms de la vista revelada son el número que importa: dan unos **75 cuadros
 por segundo** arrastrando un deslizador, y **no suben si la foto es más
 grande**, porque dependen del tamaño de la ventana.
 
-Las dos filas de la vista revelada son la prueba de que la fusión funciona:
-pasar de dos controles movidos a seis cuesta **1,1 ms**, no cuatro pasadas
-más. Sin fusionar serían unos 24 ms de más.
+Las filas de la vista revelada son la prueba de que la fusión funciona: pasar
+de dos controles movidos a seis cuesta **2,4 ms**, no cuatro pasadas más, y
+añadir el degradado cuesta **1,1**. Sin fusionar serían unos 24 ms de más.
 
 Y por eso el histograma tiene dos modos: los 86 ms del completo son
 inaceptables sesenta veces por segundo, así que mientras se arrastra se pide el
@@ -682,7 +763,7 @@ usa LTO completo y una sola unidad de codegen.
 cargo test
 ```
 
-91 pruebas: 88 del núcleo, que corren en centésimas de segundo porque no
+101 pruebas: 97 del núcleo, que corren en centésimas de segundo porque no
 arrastran Tauri, y 3 de integración que recorren una sesión entera —abrir,
 ajustar, comparar, deshacer, exportar— contra el estado real de la aplicación.
 
@@ -715,7 +796,7 @@ crates/
     examples/sonda_raw.rs    la prueba de riesgo del RAW
   pf-document/    Documento = original + lista de operaciones
     operacion.rs    qué hace cada operación y por qué
-    plan.rs         las resuelve y las ejecuta en una sola pasada
+    plan.rs         las resuelve, pliega el degradado y ejecuta una pasada
     examples/revelar.rs      el banco de medidas
 
 src-tauri/        la cáscara: ventana, estado y comandos
@@ -751,7 +832,8 @@ sobre píxeles**. Si hace falta uno, su sitio es `pf-image`.
 | `0` | Ajustar a la ventana |
 | `1` | Tamaño real 1:1 |
 | `P` | Ocultar o enseñar el panel |
-| `M` / `C` | Mano / Cuentagotas |
+| `M` / `C` / `D` | Mano / Cuentagotas / Degradado |
+| `Supr` | Quitar el degradado |
 | `\` (mantener) | Ver el original |
 | Rueda | Zoom anclado al cursor |
 | Arrastrar | Desplazar (con la Mano) |
@@ -769,25 +851,28 @@ dejaría inalcanzables, que es un control muerto por la puerta de atrás.
 
 En el orden en que tiene sentido hacerlo, y con el motivo del orden:
 
-1. **Temperatura y tinte.** Hay un problema de honradez que resolver antes:
+1. **Más ajustes dentro del degradado**: hoy solo lleva la luz. El contraste
+   y las zonas caben, pero obligan a un plan anidado y hay que medirlo antes
+   de prometerlo.
+2. **Temperatura y tinte.** Hay un problema de honradez que resolver antes:
    los datos que llegan a las operaciones ya pasaron por el balance de blancos
    de la cámara, así que un control ahí corrige, no mide. Hacerlo de verdad
    obliga a revelar en espacio de cámara y arrastra la exposición automática
    con él. Entra con su aviso en la interfaz o no entra.
-2. **Soltar una foto en la ventana para abrirla.** Hoy no existe: hace falta
+3. **Soltar una foto en la ventana para abrirla.** Hoy no existe: hace falta
    `onDragDropEvent` de Tauri, porque el `drop` del DOM se lo come el WebView.
    El sitio natural es la pantalla de «Abre una foto para empezar», y el día
    que esté, su botón «Abrir…» se retira y la aplicación llega a cero puertas
    dobles.
-3. **Más operaciones de revelado**: luces, sombras, blancos, negros,
+4. **Más operaciones de revelado**: luces, sombras, blancos, negros,
    temperatura y tinte. Cuando sean ocho o diez, el enum `Operacion` empezará a
    molestar y será el momento de partirlo; hoy no.
-4. **Guardar proyectos (`.pforge`).** El formato se definirá cuando la lista de
+5. **Guardar proyectos (`.pforge`).** El formato se definirá cuando la lista de
    operaciones esté asentada. Inventarlo ahora sería diseñar a ciegas, y
    cambiarlo después rompería los archivos de quien ya lo use.
-5. **Capas y máscaras.** Aquí es donde el modelo de «una lista plana de
+6. **Capas y máscaras.** Aquí es donde el modelo de «una lista plana de
    operaciones» se queda corto y habrá que revisarlo de verdad.
-6. **GPU**, si las cifras lo piden. Hoy no lo piden.
+7. **GPU**, si las cifras lo piden. Hoy no lo piden.
 
 ---
 

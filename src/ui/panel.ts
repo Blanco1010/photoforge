@@ -125,6 +125,14 @@ class Deslizador {
     private readonly alMover: (v: number) => void,
     private readonly alSoltar: () => void,
     ayuda?: string,
+    /**
+     * A dónde vuelve el botón ↺.
+     *
+     * Casi siempre es cero, pero el del degradado vuelve a su valor de
+     * partida, que es el que dejó el arrastre. El rótulo del botón dice
+     * «Volver al valor de partida», así que tiene que ser verdad.
+     */
+    private readonly partida = 0,
   ) {
     this.rango = el("input", {
       clase: "deslizador__rango",
@@ -154,7 +162,7 @@ class Deslizador {
       clase: "deslizador__cero",
       texto: "↺",
       titulo: "Volver al valor de partida",
-      alClic: () => this.poner(0, true),
+      alClic: () => this.poner(this.partida, true),
     });
 
     this.nodo = el(
@@ -215,6 +223,16 @@ function seccion(
   abiertaPorOmision: boolean,
   ...hijos: Hijos
 ): HTMLDetailsElement {
+  return seccionAvisada(id, titulo, abiertaPorOmision, undefined, ...hijos);
+}
+
+function seccionAvisada(
+  id: string,
+  titulo: string,
+  abiertaPorOmision: boolean,
+  alPlegar: ((abierta: boolean) => void) | undefined,
+  ...hijos: Hijos
+): HTMLDetailsElement {
   const clave = `photoforge.panel.${id}`;
   const guardado = localStorage.getItem(clave);
   const abierta = guardado === null ? abiertaPorOmision : guardado === "abierto";
@@ -231,6 +249,7 @@ function seccion(
   );
   nodo.addEventListener("toggle", () => {
     localStorage.setItem(clave, nodo.open ? "abierto" : "cerrado");
+    alPlegar?.(nodo.open);
   });
   return nodo;
 }
@@ -270,12 +289,19 @@ export class Panel {
    * siguiente control es añadir una entrada.
    */
   private readonly cantidades = new Map<ClaseCantidad, Deslizador>();
+  private readonly luzDegradado: Deslizador;
+  private readonly sinDegradado: HTMLParagraphElement;
+  private readonly conDegradado: HTMLDivElement;
+  /** Avisa al lienzo de si hay que dibujar las líneas del degradado. */
+  alVerDegradado?: (visible: boolean) => void;
   private readonly resumen: HTMLDListElement;
   private readonly listaExif: HTMLDivElement;
   private readonly detalleExif: HTMLDetailsElement;
 
   constructor(
     private readonly alAjustar: (op: Operacion, definitivo: boolean) => void,
+    /** Para que el panel pueda devolver la ficha que le dé un comando suyo. */
+    private readonly alRefrescar?: (f: Ficha) => void,
   ) {
     this.avisoRecorte = el("p", { clase: "histograma__aviso" });
 
@@ -322,6 +348,25 @@ export class Panel {
       "En vez de cortar lo que se pasa de blanco, lo dobla para que no se queme. Los medios tonos no se tocan.",
       (v) => this.alAjustar({ clase: "curva", activa: v }, true),
     );
+
+    this.luzDegradado = new Deslizador(
+      "Luz del degradado",
+      -6,
+      6,
+      0.05,
+      (v) => `${v > 0 ? "+" : ""}${v.toFixed(2).replace(".", ",")} EV`,
+      (v) => void api.ajustarDegradado(v, false).then((f) => this.alRefrescar?.(f)),
+      () => void api.ajustarDegradado(this.luzDegradado.valor(), true).then((f) => this.alRefrescar?.(f)),
+      "Quita o pone luz dentro de la franja, como el cristal degradado que se pone delante del objetivo. Se aplica antes de la curva de luces, así que oscurecer un cielo quemado puede devolverle detalle. La franja es RECTA y no sabe lo que hay debajo: lo que asome dentro de ella —las cumbres, las copas de los árboles, un tejado— se oscurece igual que el cielo.",
+      -0.75,
+    );
+    this.sinDegradado = el("p", {
+      clase: "metadatos__vacio",
+      texto:
+        "Ningún degradado puesto. Elige la herramienta Degradado (D) y arrastra sobre la foto: desde donde quieras el efecto entero hasta donde se acabe.",
+    });
+    this.conDegradado = el("div", {}, this.luzDegradado.nodo);
+    this.conDegradado.hidden = true;
 
     this.resumen = el("dl", { clase: "metadatos__resumen" });
     this.listaExif = el("div", { clase: "metadatos__lista" });
@@ -376,6 +421,17 @@ export class Panel {
         cantidad("Contraste", "contraste",
           "Separa o junta los tonos alrededor del medio. Se aplica sobre el valor que verías en pantalla y no sobre la luz, para que el deslizador se sienta parejo de punta a punta."),
       ),
+      // El degradado va al final de los ajustes y no entre medias: no es una
+      // décima entrada de la lista ordenada, es un ajuste que modula la
+      // exposición del revelado entero.
+      seccionAvisada(
+        "degradado",
+        "Degradado",
+        true,
+        (abierta) => this.alVerDegradado?.(abierta),
+        this.sinDegradado,
+        this.conDegradado,
+      ),
       // Metadatos empieza CERRADA: se lee una vez al abrir la foto y nunca
       // más, es la que crece, y así enseña el plegado en el primer arranque
       // sin que nadie tenga que contarlo.
@@ -401,6 +457,11 @@ export class Panel {
 
     const cur = ficha?.operaciones.find((o) => o.clase === "curva");
     this.curva.poner(cur?.clase === "curva" && cur.activa);
+
+    const hay = ficha?.degradado != null;
+    this.sinDegradado.hidden = hay;
+    this.conDegradado.hidden = !hay;
+    this.luzDegradado.poner(ficha?.degradado?.pasos ?? -0.75, false);
     this.ponerMetadatos(ficha);
   }
 
@@ -478,6 +539,18 @@ export class Panel {
         ),
       );
     }
+  }
+
+  /** Despliega la sección del degradado. La llama la herramienta. */
+  abrirDegradado(): void {
+    const s = this.nodo.querySelectorAll<HTMLDetailsElement>(".panel__seccion")[3];
+    if (s && !s.open) s.open = true;
+    this.alVerDegradado?.(s?.open ?? false);
+  }
+
+  /** Si la sección del degradado está desplegada. */
+  get degradadoALaVista(): boolean {
+    return this.nodo.querySelectorAll<HTMLDetailsElement>(".panel__seccion")[3]?.open ?? false;
   }
 
   /** Apaga los ajustes cuando no hay nada abierto. */

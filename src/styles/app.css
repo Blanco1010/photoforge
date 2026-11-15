@@ -272,8 +272,22 @@ body {
   cursor: grabbing;
 }
 
-.lienzo__canvas--cuentagotas {
+.lienzo__canvas--cuentagotas,
+.lienzo__canvas--degradado {
   cursor: crosshair;
+}
+
+/*
+ * El lienzo de los adornos: inerte al ratón, para que TODOS los eventos
+ * sigan llegando al de la foto y la captura del puntero, el botón central y
+ * la rueda no cambien ni una línea.
+ */
+.lienzo__adorno {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
 }
 
 .vacio {
