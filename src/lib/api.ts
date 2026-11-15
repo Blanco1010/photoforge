@@ -11,8 +11,15 @@ import { invoke } from "@tauri-apps/api/core";
 
 export type Operacion =
   | { clase: "exposicion"; pasos: number }
+  | { clase: "luces"; cantidad: number }
+  | { clase: "sombras"; cantidad: number }
+  | { clase: "blancos"; cantidad: number }
+  | { clase: "negros"; cantidad: number }
   | { clase: "contraste"; cantidad: number }
   | { clase: "curva"; activa: boolean };
+
+/** Las clases que son un deslizador de -100 a +100. */
+export type ClaseCantidad = "luces" | "sombras" | "blancos" | "negros" | "contraste";
 
 /** De dónde vienen los píxeles: un RAW sin interpretar o un archivo ya revelado. */
 export type Procedencia = "revelada" | "escena";

@@ -2,7 +2,7 @@
  * El panel de la derecha: histograma, ajustes y metadatos.
  */
 
-import { api, type Ficha, type Histograma, type Operacion } from "../lib/api";
+import { api, type ClaseCantidad, type Ficha, type Histograma, type Operacion } from "../lib/api";
 import { el, vaciar, type Hijos } from "../lib/dom";
 
 /** Dibuja el histograma en un lienzo pequeño. */
@@ -107,6 +107,14 @@ class Deslizador {
   readonly nodo: HTMLDivElement;
   private readonly rango: HTMLInputElement;
   private readonly lectura: HTMLSpanElement;
+  /**
+   * El tooltip va en la ETIQUETA y no en el deslizador entero.
+   *
+   * Si estuviera en el contenedor saltaría también al arrastrar, y un globo
+   * de texto tapando la foto justo mientras la estás juzgando es lo contrario
+   * de una ayuda.
+   */
+  private readonly ayuda?: string;
 
   constructor(
     etiqueta: string,
@@ -116,6 +124,7 @@ class Deslizador {
     private readonly formato: (v: number) => string,
     private readonly alMover: (v: number) => void,
     private readonly alSoltar: () => void,
+    ayuda?: string,
   ) {
     this.rango = el("input", {
       clase: "deslizador__rango",
@@ -126,6 +135,7 @@ class Deslizador {
       value: "0",
     });
     this.lectura = el("span", { clase: "deslizador__lectura", texto: formato(0) });
+    this.ayuda = ayuda;
 
     this.rango.addEventListener("input", () => {
       const v = Number(this.rango.value);
@@ -136,10 +146,14 @@ class Deslizador {
     // histograma completo) sin hacerlo sesenta veces durante el arrastre.
     this.rango.addEventListener("change", () => this.alSoltar());
 
+    // El glifo es ↺ y no «0», y el motivo es el mismo que el del cuentagotas:
+    // no estaba roto, decía mal lo que hacía. «0» es además la tecla de
+    // «ajustar a la ventana», y con ocho deslizadores en pantalla la interfaz
+    // enseñaría ocho veces el símbolo de una tecla que hace otra cosa.
     const reiniciar = el("button", {
       clase: "deslizador__cero",
-      texto: "0",
-      titulo: "Volver a cero",
+      texto: "↺",
+      titulo: "Volver al valor de partida",
       alClic: () => this.poner(0, true),
     });
 
@@ -149,12 +163,17 @@ class Deslizador {
       el(
         "div",
         { clase: "deslizador__cabecera" },
-        el("span", { clase: "deslizador__etiqueta", texto: etiqueta }),
+        el("span", { clase: "deslizador__etiqueta", texto: etiqueta, titulo: this.ayuda ?? "" }),
         this.lectura,
         reiniciar,
       ),
       this.rango,
     );
+  }
+
+  /** Lo que marca ahora mismo. */
+  valor(): number {
+    return Number(this.rango.value);
   }
 
   /** Coloca el deslizador. Con `avisar` a `false` no dispara el callback. */
@@ -242,8 +261,15 @@ export class Panel {
   private readonly histograma = new DibujoHistograma();
   private readonly avisoRecorte: HTMLParagraphElement;
   private readonly exposicion: Deslizador;
-  private readonly contraste: Deslizador;
   private readonly curva: Casilla;
+  /**
+   * Los cinco deslizadores de -100 a +100, por su clase.
+   *
+   * Un mapa y no cinco campos: `sincronizar` recorre esto en una línea en vez
+   * de hacer cinco `find` con cinco comparaciones de tipo, y añadir el
+   * siguiente control es añadir una entrada.
+   */
+  private readonly cantidades = new Map<ClaseCantidad, Deslizador>();
   private readonly resumen: HTMLDListElement;
   private readonly listaExif: HTMLDivElement;
   private readonly detalleExif: HTMLDetailsElement;
@@ -264,17 +290,30 @@ export class Panel {
       0.05,
       (v) => `${v > 0 ? "+" : ""}${v.toFixed(2).replace(".", ",")} EV`,
       (v) => this.alAjustar({ clase: "exposicion", pasos: v }, false),
-      () => this.alAjustar({ clase: "exposicion", pasos: Number(this.valorExposicion()) }, true),
+      () => this.alAjustar({ clase: "exposicion", pasos: this.exposicion.valor() }, true),
+      "Cuánta luz. Cada paso es el doble, igual que en la cámara.",
     );
-    this.contraste = new Deslizador(
-      "Contraste",
-      -100,
-      100,
-      1,
-      (v) => `${v > 0 ? "+" : ""}${v.toFixed(0)}`,
-      (v) => this.alAjustar({ clase: "contraste", cantidad: v }, false),
-      () => this.alAjustar({ clase: "contraste", cantidad: Number(this.valorContraste()) }, true),
-    );
+    // Los cinco de -100 a +100 salen de la misma función.
+    //
+    // Sin ella, cada uno sería un bloque de siete líneas en el que la cadena
+    // de la clase aparece DOS veces —al mover y al soltar— más una tercera al
+    // sincronizar. Quince apariciones de cinco cadenas en tres sitios es
+    // exactamente el error que la tabla de acciones del menú existe para
+    // matar.
+    const cantidad = (etiqueta: string, clase: ClaseCantidad, ayuda: string) => {
+      const d = new Deslizador(
+        etiqueta,
+        -100,
+        100,
+        1,
+        (v) => `${v > 0 ? "+" : ""}${v.toFixed(0)}`,
+        (v) => this.alAjustar({ clase, cantidad: v }, false),
+        () => this.alAjustar({ clase, cantidad: d.valor() }, true),
+        ayuda,
+      );
+      this.cantidades.set(clase, d);
+      return d.nodo;
+    };
 
     // La curva de luces: una casilla y no un deslizador. El porqué está en
     // `Operacion::CurvaDeTono`, en el lado de Rust.
@@ -306,29 +345,42 @@ export class Panel {
         el("div", { clase: "histograma" }, this.histograma.nodo),
         this.avisoRecorte,
       ),
+      // Los grupos son la misma raya que dibuja `Operacion::orden()` en Rust:
+      // leído de arriba abajo, el panel ENSEÑA el orden en que se aplican las
+      // operaciones, que es la decisión más difícil de explicar del programa.
+      // Y de paso es el orden de Lightroom, así que los dedos de quien venga
+      // de ahí aciertan.
       seccion(
-        "revelado",
-        "Revelado",
+        "luz",
+        "Luz",
         true,
         this.exposicion.nodo,
-        this.contraste.nodo,
+        cantidad("Luces", "luces",
+          "Aclara o recupera lo más brillante sin mover el blanco de la foto. Actúa por brillo y no por zonas, así que dos cosas igual de claras en esquinas distintas se mueven igual. Sobre un cielo que llegó quemado no hay detalle que recuperar: bajarlo solo lo deja gris."),
+        cantidad("Sombras", "sombras",
+          "Abre o cierra lo más oscuro sin mover el negro de la foto. Actúa por brillo y no por zonas: no se puede abrir la sombra del árbol sin tocar la chaqueta oscura, y es eso lo que garantiza que no aparezcan halos."),
+        cantidad("Blancos", "blancos",
+          "Decide dónde cae el blanco. Es el único junto con Negros que puede empujar un tono fuera del rango: al soltarlo, el aviso del histograma te dice cuánto se ha quemado."),
+        cantidad("Negros", "negros",
+          "Decide dónde cae el negro. Es el único junto con Blancos que puede empujar un tono fuera del rango: al soltarlo, el aviso del histograma te dice cuánto ha quedado en negro."),
+      ),
+      // «Interpretación» y no «Tono»: en este proyecto «tono» ya significa el
+      // matiz de un color y además el valor tonal, y una tercera acepción
+      // sobraría. Es la palabra que usa el propio `orden()`: el contraste es
+      // una decisión de interpretación.
+      seccion(
+        "interpretacion",
+        "Interpretación",
+        true,
         this.curva.nodo,
+        cantidad("Contraste", "contraste",
+          "Separa o junta los tonos alrededor del medio. Se aplica sobre el valor que verías en pantalla y no sobre la luz, para que el deslizador se sienta parejo de punta a punta."),
       ),
       // Metadatos empieza CERRADA: se lee una vez al abrir la foto y nunca
       // más, es la que crece, y así enseña el plegado en el primer arranque
       // sin que nadie tenga que contarlo.
       seccion("metadatos", "Metadatos", false, this.resumen, this.detalleExif),
     );
-  }
-
-  private valorExposicion(): string {
-    return (
-      this.exposicion.nodo.querySelector<HTMLInputElement>(".deslizador__rango")?.value ?? "0"
-    );
-  }
-
-  private valorContraste(): string {
-    return this.contraste.nodo.querySelector<HTMLInputElement>(".deslizador__rango")?.value ?? "0";
   }
 
   /**
@@ -340,10 +392,14 @@ export class Panel {
    */
   sincronizar(ficha: Ficha | null): void {
     const exp = ficha?.operaciones.find((o) => o.clase === "exposicion");
-    const con = ficha?.operaciones.find((o) => o.clase === "contraste");
+    this.exposicion.poner(exp?.clase === "exposicion" ? exp.pasos : 0, false);
+
+    for (const [clase, deslizador] of this.cantidades) {
+      const op = ficha?.operaciones.find((o) => o.clase === clase);
+      deslizador.poner(op && "cantidad" in op ? op.cantidad : 0, false);
+    }
+
     const cur = ficha?.operaciones.find((o) => o.clase === "curva");
-    this.exposicion.poner(exp && exp.clase === "exposicion" ? exp.pasos : 0, false);
-    this.contraste.poner(con && con.clase === "contraste" ? con.cantidad : 0, false);
     this.curva.poner(cur?.clase === "curva" && cur.activa);
     this.ponerMetadatos(ficha);
   }
@@ -354,7 +410,8 @@ export class Panel {
       if (!h) this.avisoRecorte.textContent = "";
       return;
     }
-    const porcentaje = (n: number) => ((n / Math.max(1, h.muestras)) * 100).toFixed(1);
+    const porcentaje = (n: number) =>
+      ((n / Math.max(1, h.muestras)) * 100).toFixed(1).replace(".", ",");
     const partes: string[] = [];
     if (h.recortados_negros > 0) partes.push(`${porcentaje(h.recortados_negros)} % en negro`);
     if (h.recortados_blancos > 0) partes.push(`${porcentaje(h.recortados_blancos)} % quemado`);

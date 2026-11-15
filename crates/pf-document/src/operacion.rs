@@ -1,6 +1,6 @@
 //! Las operaciones de revelado.
 
-use pf_image::Imagen;
+use pf_image::{Imagen, color};
 
 /// Una operación de revelado con sus parámetros.
 ///
@@ -26,6 +26,22 @@ pub enum Operacion {
     /// devolverlo al rango visible. El recorte ocurre solo al pintar o al
     /// exportar.
     Exposicion { pasos: f32 },
+    /// Abre o cierra lo más oscuro, de -100 a +100.
+    ///
+    /// Ver [`sombras`] para la fórmula y [`mascara_sombras`] para la zona.
+    Sombras { cantidad: f32 },
+    /// Aclara o recupera lo más brillante, de -100 a +100.
+    ///
+    /// Ver [`luces`] y [`mascara_luces`].
+    Luces { cantidad: f32 },
+    /// Decide dónde cae el negro, de -100 a +100.
+    ///
+    /// Ver [`negros`] y [`mascara_negros`].
+    Negros { cantidad: f32 },
+    /// Decide dónde cae el blanco, de -100 a +100.
+    ///
+    /// Ver [`blancos`] y [`mascara_blancos`].
+    Blancos { cantidad: f32 },
     /// Contraste, de -100 a +100. El 0 no toca nada.
     ///
     /// # Por qué el contraste NO se aplica en lineal
@@ -77,6 +93,10 @@ impl Operacion {
     pub fn clase(&self) -> Clase {
         match self {
             Operacion::Exposicion { .. } => "exposicion",
+            Operacion::Sombras { .. } => "sombras",
+            Operacion::Luces { .. } => "luces",
+            Operacion::Negros { .. } => "negros",
+            Operacion::Blancos { .. } => "blancos",
             Operacion::Contraste { .. } => "contraste",
             Operacion::CurvaDeTono { .. } => "curva",
         }
@@ -90,6 +110,10 @@ impl Operacion {
     pub fn es_neutra(&self) -> bool {
         match self {
             Operacion::Exposicion { pasos } => *pasos == 0.0,
+            Operacion::Sombras { cantidad }
+            | Operacion::Luces { cantidad }
+            | Operacion::Negros { cantidad }
+            | Operacion::Blancos { cantidad } => *cantidad == 0.0,
             Operacion::Contraste { cantidad } => *cantidad == 0.0,
             Operacion::CurvaDeTono { activa } => !*activa,
         }
@@ -111,9 +135,127 @@ impl Operacion {
         match self {
             Operacion::Exposicion { .. } => 10,
             Operacion::CurvaDeTono { .. } => 20,
-            Operacion::Contraste { .. } => 30,
+            // El bloque tonal, con huecos de dos en dos para poder meter algo
+            // en medio sin renumerar lo demás.
+            //
+            // Recuperar (luces y sombras) antes que decidir dónde caen los
+            // extremos (blancos y negros): al revés, lo que acabas de
+            // recortar ya no se puede levantar.
+            //
+            // Dentro de cada par el orden da IGUAL, y eso no es casualidad:
+            // la máscara de luces se anula por debajo del medio tono y la de
+            // sombras por encima, así que las dos no se tocan nunca. Lo mismo
+            // con blancos y negros. Hay una prueba que lo fija. Como da
+            // igual, se eligió el orden en que los enseña el panel, que es el
+            // de Lightroom: de lo claro a lo oscuro.
+            Operacion::Luces { .. } => 30,
+            Operacion::Sombras { .. } => 32,
+            Operacion::Blancos { .. } => 34,
+            Operacion::Negros { .. } => 36,
+            Operacion::Contraste { .. } => 40,
         }
     }
+}
+
+
+// ===========================================================================
+// Los cuatro controles tonales
+// ===========================================================================
+//
+// # Por qué actúan sobre la LUMINANCIA y no canal a canal
+//
+// «Aclarar las sombras» es una frase sobre el brillo, no sobre el rojo. Si
+// cada canal se tratara por su cuenta, un rojo oscuro saturado se aclararía
+// solo por el canal rojo y el color se iría hacia el pastel: la foto perdería
+// saturación justo donde más se nota. Calculando una ganancia a partir de la
+// luminancia y multiplicando los tres canales por ELLA, el tono se queda
+// exactamente donde estaba.
+//
+// # Por qué la zona se decide en espacio perceptual
+//
+// La máscara tiene que preguntar «¿esto es una sombra?», y eso es una
+// pregunta sobre cómo se ve, no sobre cuántos fotones hay. En luz lineal, lo
+// que el ojo llama «medio tono» está en 0,18 y casi toda la foto se amontona
+// por debajo de 0,2: una máscara repartida ahí no separaría nada. Es el mismo
+// razonamiento por el que el contraste no se aplica en lineal.
+//
+// # Por qué no hay máscara espacial
+//
+// Lightroom y compañía miran también a los vecinos, y por eso pueden abrir la
+// sombra del árbol sin tocar la chaqueta oscura del primer plano. Eso vale un
+// desenfoque guiado por pasada, que es exactamente la clase de operación que
+// este revelado no puede permitirse hoy —hay que leer los vecinos, y el
+// muestreo de la vista ya ha tirado la mitad de ellos—. A cambio, estas
+// máscaras NO pueden dar halos, que es el defecto clásico del otro camino.
+// El tooltip lo dice: actúa por brillo y no por zonas.
+
+/// Lo que mueven luces y sombras a tope, como fracción del camino al destino.
+const FUERZA_ZONAL: f32 = 0.5;
+/// Lo que mueven blancos y negros a tope, en valor perceptual.
+const FUERZA_EXTREMO: f32 = 0.35;
+/// El pie y el hombro que anclan las máscaras zonales en 0 y en 1.
+const PIE: f32 = 0.08;
+const HOMBRO: f32 = 0.08;
+/// El medio tono perceptual: el pivote de todo el bloque.
+const MEDIO: f32 = 0.5;
+/// Cuánto se extienden las máscaras de los extremos hacia el centro.
+const ANCHO: f32 = 0.75;
+
+/// La zona de las sombras.
+///
+/// Sube desde 0 en el negro absoluto —ese es el `PIE`, y es lo que hace que
+/// subir las sombras NO levante el punto negro— y baja hasta 0 en el medio
+/// tono.
+pub fn mascara_sombras(p: f32) -> f32 {
+    color::suave(p / PIE) * (1.0 - color::suave(p / MEDIO))
+}
+
+/// La zona de las luces, simétrica: sube desde el medio tono y vuelve a 0 en
+/// el blanco, que es lo que impide que subir las luces queme lo que no estaba
+/// quemado.
+pub fn mascara_luces(p: f32) -> f32 {
+    color::suave((p - MEDIO) / MEDIO) * (1.0 - color::suave((p - (1.0 - HOMBRO)) / HOMBRO))
+}
+
+/// La zona de los negros: máxima en el negro y nula a partir del medio tono.
+/// Aquí NO hay pie, y es el punto entero del control: este sí mueve el negro.
+pub fn mascara_negros(p: f32) -> f32 {
+    color::suave((MEDIO - p) / ANCHO)
+}
+
+/// La zona de los blancos. Sin hombro, por el mismo motivo.
+pub fn mascara_blancos(p: f32) -> f32 {
+    color::suave((p - MEDIO) / ANCHO)
+}
+
+/// Sombras: empuja la zona oscura hacia el medio tono, o hacia el negro.
+///
+/// Es una interpolación hacia un destino y no una suma, y de ahí sale la
+/// garantía: por mucho que se suba, un tono no puede pasar del medio tono, y
+/// por mucho que se baje no puede pasar del negro. Nada se sale del rango.
+pub fn sombras(p: f32, t: f32) -> f32 {
+    let destino = if t > 0.0 { MEDIO } else { 0.0 };
+    p + FUERZA_ZONAL * t.abs() * mascara_sombras(p) * (destino - p)
+}
+
+/// Luces: lo mismo hacia el blanco o hacia el medio tono.
+pub fn luces(p: f32, t: f32) -> f32 {
+    let destino = if t > 0.0 { 1.0 } else { MEDIO };
+    p + FUERZA_ZONAL * t.abs() * mascara_luces(p) * (destino - p)
+}
+
+/// Negros: una suma, no una interpolación.
+///
+/// Y esa es toda la diferencia con sombras: este SÍ puede sacar un tono por
+/// debajo del negro, porque para eso está. Decidir dónde cae el negro
+/// significa poder recortar.
+pub fn negros(p: f32, t: f32) -> f32 {
+    p + FUERZA_EXTREMO * t * mascara_negros(p)
+}
+
+/// Blancos: igual por el otro lado, y también puede recortar.
+pub fn blancos(p: f32, t: f32) -> f32 {
+    p + FUERZA_EXTREMO * t * mascara_blancos(p)
 }
 
 /// Aplica la lista de operaciones sobre una imagen, en el sitio.
@@ -242,6 +384,109 @@ mod pruebas {
         let mut img = partida.clone();
         aplicar(&[Operacion::CurvaDeTono { activa: false }], &mut img);
         assert_eq!(img.datos(), partida.datos());
+    }
+
+
+    /// Todos los controles tonales, en forma de función escalar sobre el
+    /// valor perceptual. Para las pruebas de propiedades.
+    fn tonal(p: f32, cual: &str, t: f32) -> f32 {
+        match cual {
+            "sombras" => sombras(p, t),
+            "luces" => luces(p, t),
+            "negros" => negros(p, t),
+            "blancos" => blancos(p, t),
+            _ => unreachable!(),
+        }
+    }
+
+    const TONALES: [&str; 4] = ["sombras", "luces", "negros", "blancos"];
+
+    #[test]
+    fn los_cuatro_tonales_son_crecientes_en_todo_el_rango() {
+        // Si alguno dejara de crecer, dos tonos distintos saldrían iguales o
+        // —peor— del revés, y eso en una foto se ve como una mancha.
+        for cual in TONALES {
+            for t in [-1.0f32, -0.5, 0.5, 1.0] {
+                let mut anterior = f32::MIN;
+                for i in -2000..=30_000 {
+                    let p = i as f32 / 10_000.0;
+                    let y = tonal(p, cual, t);
+                    assert!(
+                        y > anterior,
+                        "{cual} con t={t} dejó de crecer en p={p} ({y} tras {anterior})"
+                    );
+                    anterior = y;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn luces_y_sombras_no_mueven_el_blanco_ni_el_negro() {
+        // Es la promesa que llevan en el tooltip, y por eso las máscaras
+        // tienen pie y hombro. Negros y blancos sí los mueven: para eso están.
+        for t in [-1.0f32, -0.5, 0.5, 1.0] {
+            for cual in ["sombras", "luces"] {
+                assert_eq!(tonal(0.0, cual, t), 0.0, "{cual} movió el negro");
+                assert_eq!(tonal(1.0, cual, t), 1.0, "{cual} movió el blanco");
+            }
+        }
+    }
+
+    #[test]
+    fn los_cuatro_dejan_los_medios_tonos_casi_quietos() {
+        // En el pivote exacto las cuatro máscaras valen cero, y cerca de él
+        // valen poco: si no, no serían controles de zona.
+        for cual in TONALES {
+            assert!((tonal(0.5, cual, 1.0) - 0.5).abs() < 1e-6, "{cual} movió el pivote");
+            assert!((tonal(0.5, cual, -1.0) - 0.5).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn las_cifras_de_calibracion_son_las_que_dice_el_diseno() {
+        // Números concretos, para que un retoque de las constantes no pase
+        // desapercibido.
+        let cerca = |a: f32, b: f32| assert!((a - b).abs() < 5e-4, "{a} debería ser {b}");
+        cerca(blancos(0.9, 1.0), 1.0925);
+        cerca(blancos(1.0, -1.0), 0.7407);
+        cerca(negros(0.1, -1.0), -0.0925);
+        cerca(negros(0.0, 1.0), 0.2593);
+        // Y la sombra más oscura que se puede distinguir sigue siendo casi
+        // negra después de subirla a tope: nada de escalones en el arranque.
+        let un_nivel = 1.0 / 255.0;
+        assert!(sombras(un_nivel, 1.0) * 255.0 < 4.0);
+    }
+
+    #[test]
+    fn luces_y_sombras_no_sacan_la_luminancia_del_rango() {
+        // El invariante se enuncia sobre la LUMINANCIA, que es donde es
+        // cierto. En un color muy saturado, la ganancia sí puede llevar un
+        // canal suelto por encima del blanco; eso lo fija la prueba de abajo.
+        for a in [-1.0f32, -0.4, 0.4, 1.0] {
+            for b in [-1.0f32, -0.4, 0.4, 1.0] {
+                for i in 0..=1000 {
+                    let p = i as f32 / 1000.0;
+                    let y = luces(sombras(p, a), b);
+                    assert!((-1e-6..=1.000001).contains(&y), "con {a}/{b} en {p} salió {y}");
+                }
+            }
+        }
+    }
+    #[test]
+    fn dentro_de_cada_par_el_orden_no_cambia_el_resultado() {
+        // Es lo que permite que el panel elija su propio orden. Las máscaras
+        // de luces y sombras no se solapan —una se anula donde empieza la
+        // otra— y lo mismo pasa con blancos y negros.
+        for i in 0..=1000 {
+            let p = i as f32 / 1000.0;
+            let a = luces(sombras(p, 0.7), -0.9);
+            let b = sombras(luces(p, -0.9), 0.7);
+            assert!((a - b).abs() < 1e-6, "luces/sombras no conmutan en {p}: {a} vs {b}");
+            let c = blancos(negros(p, -0.6), 0.8);
+            let d = negros(blancos(p, 0.8), -0.6);
+            assert!((c - d).abs() < 1e-6, "blancos/negros no conmutan en {p}: {c} vs {d}");
+        }
     }
 
     #[test]

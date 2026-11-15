@@ -35,6 +35,11 @@ fn main() {
     };
     let ev = valor("--ev=");
     let contraste = valor("--contraste=");
+    // Los cuatro tonales, para poder medir el caso peor: todo movido.
+    let luces = valor("--luces=");
+    let sombras = valor("--sombras=");
+    let blancos = valor("--blancos=");
+    let negros = valor("--negros=");
     let rutas: Vec<PathBuf> = args.iter().filter(|a| !a.starts_with("--")).map(PathBuf::from).collect();
 
     if rutas.is_empty() {
@@ -44,13 +49,19 @@ fn main() {
 
     for ruta in rutas {
         println!("\n═══ {}", ruta.display());
-        if let Err(e) = revelar(&ruta, exportar, ev, contraste) {
+        if let Err(e) = revelar(&ruta, exportar, ev, contraste, [luces, sombras, blancos, negros]) {
             eprintln!("  ERROR: {e}");
         }
     }
 }
 
-fn revelar(ruta: &Path, exportar: bool, ev: Option<f32>, contraste: Option<f32>) -> pf_core::Resultado<()> {
+fn revelar(
+    ruta: &Path,
+    exportar: bool,
+    ev: Option<f32>,
+    contraste: Option<f32>,
+    tonales: [Option<f32>; 4],
+) -> pf_core::Resultado<()> {
     let reloj = Instant::now();
     let mut doc = Documento::abrir(ruta)?;
     let ms_abrir = reloj.elapsed().as_millis();
@@ -92,6 +103,18 @@ fn revelar(ruta: &Path, exportar: bool, ev: Option<f32>, contraste: Option<f32>)
     }
     if let Some(c) = contraste {
         doc.ajustar(Operacion::Contraste { cantidad: c });
+    }
+    if let Some(c) = tonales[0] {
+        doc.ajustar(Operacion::Luces { cantidad: c });
+    }
+    if let Some(c) = tonales[1] {
+        doc.ajustar(Operacion::Sombras { cantidad: c });
+    }
+    if let Some(c) = tonales[2] {
+        doc.ajustar(Operacion::Blancos { cantidad: c });
+    }
+    if let Some(c) = tonales[3] {
+        doc.ajustar(Operacion::Negros { cantidad: c });
     }
     println!("  procedencia: {:?} · ajustes: {:?}", doc.procedencia(), doc.operaciones());
 

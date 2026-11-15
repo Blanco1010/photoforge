@@ -432,7 +432,8 @@ body {
 
 /* ---------- Deslizadores ---------- */
 
-.deslizador + .deslizador {
+.deslizador + .deslizador,
+.casilla + .deslizador {
   margin-top: 14px;
 }
 

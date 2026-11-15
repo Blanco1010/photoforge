@@ -28,6 +28,35 @@ pub fn lineal_a_srgb(v: f32) -> f32 {
     }
 }
 
+/// La rampa suave que usan todas las máscaras de revelado.
+///
+/// Es el `smoothstep` de toda la vida: vale 0 hasta `t = 0`, 1 a partir de
+/// `t = 1`, y entre medias sube con pendiente cero en los dos extremos.
+///
+/// Esa pendiente cero es justo el motivo de usarla y no una rampa recta: una
+/// recta deja una esquina donde empieza y donde acaba, y en una foto una
+/// esquina en la curva de tono se ve como una raya en un degradado —el cielo
+/// de la tarde es el sitio donde siempre sale—.
+#[inline]
+pub fn suave(t: f32) -> f32 {
+    let u = t.clamp(0.0, 1.0);
+    u * u * (3.0 - 2.0 * u)
+}
+
+/// Cuánta luz tiene un píxel, con los coeficientes de Rec. 709.
+///
+/// Se aplica sobre valores LINEALES, que es donde esos tres números tienen
+/// sentido físico: dicen cuánto contribuye cada primario a la luz total que
+/// sale de la pantalla. El verde pesa siete veces más que el azul porque el
+/// ojo es así, no porque sea una convención.
+///
+/// Vive aquí y no en cada sitio que la necesita porque ya son tres: la
+/// exposición automática de un RAW, el histograma y el revelado.
+#[inline]
+pub fn luminancia(r: f32, v: f32, a: f32) -> f32 {
+    0.2126 * r + 0.7152 * v + 0.0722 * a
+}
+
 /// Donde empieza a doblarse la curva de luces.
 ///
 /// Por debajo de este valor no se toca nada. Se eligió 0,75 porque es donde
@@ -240,6 +269,28 @@ mod pruebas {
         assert_eq!(t.a_byte(-5.0), 0);
         assert_eq!(t.a_byte(f32::INFINITY), 255);
         assert_eq!(t.a_byte(100.0), 255);
+    }
+
+    #[test]
+    fn la_rampa_suave_tiene_pendiente_cero_en_los_dos_extremos() {
+        // Es la propiedad entera: sin ella aparece una raya en los degradados.
+        assert_eq!(suave(-1.0), 0.0);
+        assert_eq!(suave(0.0), 0.0);
+        assert_eq!(suave(1.0), 1.0);
+        assert_eq!(suave(2.0), 1.0);
+        assert!((suave(0.5) - 0.5).abs() < 1e-6);
+        let d = 1e-3;
+        assert!(suave(d) / d < 0.01, "la rampa arranca con pendiente apreciable");
+        assert!((1.0 - suave(1.0 - d)) / d < 0.01, "la rampa termina con pendiente apreciable");
+    }
+
+    #[test]
+    fn la_luminancia_de_un_gris_es_ese_mismo_gris() {
+        for v in [0.0f32, 0.18, 0.5, 1.0, 3.0] {
+            assert!((luminancia(v, v, v) - v).abs() < 1e-6);
+        }
+        // Y el verde pesa más que los otros dos juntos.
+        assert!(luminancia(0.0, 1.0, 0.0) > luminancia(1.0, 0.0, 1.0));
     }
 
     #[test]

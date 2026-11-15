@@ -31,7 +31,7 @@
 use pf_image::{CANALES, Imagen, color};
 use rayon::prelude::*;
 
-use crate::Operacion;
+use crate::{Operacion, operacion};
 
 /// Escalones de las tablas. El mismo número y el mismo motivo que en
 /// `pf_image::color`: por debajo de un nivel de 8 bits no hay banda que ver.
@@ -54,6 +54,54 @@ pub(crate) struct Plan {
     k: f32,
     /// La curva de contraste, tabulada. `None` si el contraste es neutro.
     contraste: Option<Box<Tabla>>,
+    /// Los cuatro controles tonales, de -1 a 1. Cero es neutro.
+    tonal: [f32; 4],
+    /// Los cuatro compuestos en una sola curva de luminancia, tabulada.
+    ///
+    /// Se puede porque los cuatro son funciones de la luminancia y de nada
+    /// más, así que su composición sigue siendo una curva escalar. Da igual
+    /// cuántos estén movidos: siempre es una tabla y una búsqueda.
+    ///
+    /// Guarda la luminancia de SALIDA y no la ganancia, y eso importa: cerca
+    /// del negro la ganancia no está acotada —una sombra levantada a tope
+    /// puede pedir multiplicar por miles— y la tabla sería inútil justo donde
+    /// más resolución hace falta.
+    tabla_tonal: Option<Box<Tabla>>,
+}
+
+/// Por debajo de esto un píxel es negro y no hay ganancia que calcular.
+///
+/// No es un umbral de gusto: es el guarda de la división. Con las máscaras
+/// ancladas en el cero, la curva ya vale 0 en 0, así que esto no crea ningún
+/// escalón; solo evita el 0/0.
+const NEGRO: f32 = 1e-5;
+
+/// La curva tonal completa sobre la luminancia, sin tabla.
+///
+/// Es la verdad contra la que se construye la tabla, y la que se usa por
+/// encima del blanco, donde la tabla no llega.
+fn tonal_escalar(y: f32, [s, l, n, b]: [f32; 4]) -> f32 {
+    let mut p = color::lineal_a_srgb(y);
+    if s != 0.0 {
+        p = operacion::sombras(p, s);
+    }
+    if l != 0.0 {
+        p = operacion::luces(p, l);
+    }
+    if n != 0.0 {
+        p = operacion::negros(p, n);
+    }
+    if b != 0.0 {
+        p = operacion::blancos(p, b);
+    }
+    // Se acota por abajo y NO por arriba, y la asimetría tiene motivo: por
+    // debajo del negro no hay luz que medir, mientras que por encima del
+    // blanco sí hay luz que la pantalla no puede enseñar pero que una
+    // operación posterior puede devolver al rango. Sin este tope, Negros a
+    // tope dejaría la luminancia negativa y la ganancia cambiaría el SIGNO de
+    // los tres canales: `a_byte` lo taparía, pero un valor con el signo del
+    // revés ya no es el mismo dato.
+    color::srgb_a_lineal(p).max(0.0)
 }
 
 impl Plan {
@@ -68,7 +116,14 @@ impl Plan {
         let mut ordenadas: Vec<Operacion> = operaciones.to_vec();
         ordenadas.sort_by_key(|o| o.orden());
 
-        let mut plan = Plan { factor: 1.0, curva: false, k: 1.0, contraste: None };
+        let mut plan = Plan {
+            factor: 1.0,
+            curva: false,
+            k: 1.0,
+            contraste: None,
+            tonal: [0.0; 4],
+            tabla_tonal: None,
+        };
 
         for op in &ordenadas {
             if op.es_neutra() {
@@ -80,7 +135,19 @@ impl Plan {
                 Operacion::Contraste { cantidad } => {
                     plan.k = 1.0 + cantidad.clamp(-100.0, 100.0) / 100.0;
                 }
+                Operacion::Sombras { cantidad } => plan.tonal[0] = cantidad.clamp(-100.0, 100.0) / 100.0,
+                Operacion::Luces { cantidad } => plan.tonal[1] = cantidad.clamp(-100.0, 100.0) / 100.0,
+                Operacion::Negros { cantidad } => plan.tonal[2] = cantidad.clamp(-100.0, 100.0) / 100.0,
+                Operacion::Blancos { cantidad } => plan.tonal[3] = cantidad.clamp(-100.0, 100.0) / 100.0,
             }
+        }
+
+        if plan.tonal.iter().any(|x| *x != 0.0) {
+            let mut tabla = Box::new([0.0f32; ESCALONES + 1]);
+            for (i, v) in tabla.iter_mut().enumerate() {
+                *v = tonal_escalar(i as f32 / ESCALONES as f32, plan.tonal);
+            }
+            plan.tabla_tonal = Some(tabla);
         }
 
         if plan.k != 1.0 {
@@ -102,7 +169,7 @@ impl Plan {
 
     /// ¿Esta lista deja la imagen como estaba?
     pub(crate) fn es_identidad(&self) -> bool {
-        self.factor == 1.0 && !self.curva && self.k == 1.0
+        self.factor == 1.0 && !self.curva && self.k == 1.0 && self.tabla_tonal.is_none()
     }
 
     pub(crate) fn ejecutar(&self, img: &mut Imagen) {
@@ -112,35 +179,57 @@ impl Plan {
         let factor = self.factor;
         let curva = self.curva;
         let k = self.k;
-        let tabla = self.contraste.as_deref();
+        let contraste = self.contraste.as_deref();
+        let tabla_tonal = self.tabla_tonal.as_deref();
+        let tonal = self.tonal;
 
-        // El tamaño del trozo es múltiplo de CANALES a propósito.
-        //
-        // Hoy todas las operaciones tratan cada valor por separado y daría
-        // igual, pero en cuanto una mire al píxel entero —y la primera que lo
-        // hará es la que necesita la luminancia— un trozo que parta un píxel
-        // por la mitad pinta franjas de color en los bordes de cada trozo. Es
-        // el fallo que se cuela copiando la línea de al lado.
+        // El tamaño del trozo es múltiplo de CANALES a propósito: el bloque
+        // tonal mira al píxel ENTERO para sacar su luminancia, y un trozo que
+        // partiera un píxel por la mitad pintaría franjas de color en los
+        // bordes de cada reparto.
         img.datos_mut()
             .par_chunks_mut(CANALES * 1024)
             .for_each(|trozo| {
-                for v in trozo {
-                    let mut x = *v * factor;
-                    if curva {
-                        x = color::doblar_luces(x);
+                for px in trozo.as_chunks_mut::<CANALES>().0 {
+                    // 1 y 2. Exposición y curva de luces: canal a canal.
+                    for v in px.iter_mut() {
+                        let mut x = *v * factor;
+                        if curva {
+                            x = color::doblar_luces(x);
+                        }
+                        *v = x;
                     }
-                    if let Some(t) = tabla {
-                        x = if (0.0..=1.0).contains(&x) {
-                            interpolar(t, x)
-                        } else {
-                            // Fuera del rango visible la tabla no llega. Son
-                            // los píxeles que la exposición ya sacó por
-                            // arriba, y pagan los dos `powf` que cuesta la
-                            // fórmula de verdad.
-                            contraste_escalar(x, k)
-                        };
+
+                    // 3. El bloque tonal: una sola ganancia para los tres
+                    //    canales, sacada de la luminancia. Es lo que mantiene
+                    //    el tono exactamente donde estaba.
+                    if let Some(t) = tabla_tonal {
+                        let y = color::luminancia(px[0], px[1], px[2]);
+                        if y > NEGRO {
+                            let y2 = if y <= 1.0 {
+                                interpolar(t, y)
+                            } else {
+                                // Por encima del blanco solo actúa Blancos:
+                                // las otras tres máscaras ya valen cero ahí.
+                                tonal_escalar(y, tonal)
+                            };
+                            let g = y2 / y;
+                            px[0] *= g;
+                            px[1] *= g;
+                            px[2] *= g;
+                        }
                     }
-                    *v = x;
+
+                    // 4. Contraste: otra vez canal a canal.
+                    if let Some(t) = contraste {
+                        for v in px.iter_mut() {
+                            *v = if (0.0..=1.0).contains(v) {
+                                interpolar(t, *v)
+                            } else {
+                                contraste_escalar(*v, k)
+                            };
+                        }
+                    }
                 }
             });
     }
@@ -187,8 +276,8 @@ mod pruebas {
         img.datos().chunks(CANALES).map(|c| c[0]).collect()
     }
 
-    /// Las tres operaciones de hoy, aplicadas UNA A UNA como se hacía antes.
-    /// Es la referencia contra la que se mide la pasada fusionada.
+    /// Las operaciones aplicadas UNA A UNA, cada una con su pasada, como se
+    /// hacía antes de fusionarlas. Es la referencia contra la que se mide.
     fn una_a_una(ops: &[Operacion], img: &mut Imagen) {
         let mut ordenadas: Vec<Operacion> = ops.to_vec();
         ordenadas.sort_by_key(|o| o.orden());
@@ -212,6 +301,26 @@ mod pruebas {
                     let k = 1.0 + cantidad.clamp(-100.0, 100.0) / 100.0;
                     for v in img.datos_mut() {
                         *v = contraste_escalar(*v, k);
+                    }
+                }
+                otra => {
+                    // Los cuatro tonales, cada uno en su propia pasada.
+                    let mut t = [0.0f32; 4];
+                    match otra {
+                        Operacion::Sombras { cantidad } => t[0] = cantidad / 100.0,
+                        Operacion::Luces { cantidad } => t[1] = cantidad / 100.0,
+                        Operacion::Negros { cantidad } => t[2] = cantidad / 100.0,
+                        Operacion::Blancos { cantidad } => t[3] = cantidad / 100.0,
+                        _ => unreachable!(),
+                    }
+                    for px in img.datos_mut().as_chunks_mut::<CANALES>().0 {
+                        let y = color::luminancia(px[0], px[1], px[2]);
+                        if y > NEGRO {
+                            let g = tonal_escalar(y, t) / y;
+                            px[0] *= g;
+                            px[1] *= g;
+                            px[2] *= g;
+                        }
                     }
                 }
             }
@@ -239,6 +348,20 @@ mod pruebas {
                 Operacion::Contraste { cantidad: 35.0 },
                 Operacion::Exposicion { pasos: -1.0 },
                 Operacion::CurvaDeTono { activa: true },
+            ],
+            vec![Operacion::Sombras { cantidad: 60.0 }],
+            vec![Operacion::Luces { cantidad: -80.0 }],
+            vec![Operacion::Negros { cantidad: -35.0 }],
+            vec![Operacion::Blancos { cantidad: 45.0 }],
+            // Y las nueve juntas, que es el caso que de verdad importa.
+            vec![
+                Operacion::Blancos { cantidad: 20.0 },
+                Operacion::Contraste { cantidad: 30.0 },
+                Operacion::Sombras { cantidad: 55.0 },
+                Operacion::Exposicion { pasos: 1.2 },
+                Operacion::Negros { cantidad: -25.0 },
+                Operacion::CurvaDeTono { activa: true },
+                Operacion::Luces { cantidad: -40.0 },
             ],
         ];
 
@@ -281,12 +404,64 @@ mod pruebas {
         }
     }
 
+
+    #[test]
+    fn los_tonales_mantienen_el_tono_del_pixel() {
+        // La ganancia se saca de la luminancia y se aplica a los tres canales
+        // por igual, así que las PROPORCIONES entre canales no se mueven. Si
+        // alguien tratara cada canal por su cuenta, esta prueba lo caza: un
+        // color saturado se iría hacia el pastel.
+        let dim = Dimensiones::nueva(1, 1).unwrap();
+        let mut img = Imagen::nueva(dim, vec![0.30, 0.12, 0.05]).unwrap();
+        Plan::desde(&[Operacion::Sombras { cantidad: 80.0 }]).ejecutar(&mut img);
+        let d = img.datos();
+        assert!((d[0] / d[1] - 0.30 / 0.12).abs() < 1e-4, "el tono se movió");
+        assert!((d[1] / d[2] - 0.12 / 0.05).abs() < 1e-4, "el tono se movió");
+        assert!(d[0] > 0.30, "las sombras no se abrieron");
+    }
+
+    #[test]
+    fn un_color_saturado_si_puede_recortar_un_canal_al_subir_las_luces() {
+        // Esto NO es un fallo, es el límite de la promesa, y la prueba está
+        // aquí para que nadie lo «arregle» dentro de seis meses. El tooltip
+        // de Luces lo dice: la luminancia no se recorta, pero un canal de un
+        // color muy saturado que ya rozaba el blanco sí puede cruzarlo.
+        let dim = Dimensiones::nueva(1, 1).unwrap();
+        let mut img = Imagen::nueva(dim, vec![0.95, 0.40, 0.10]).unwrap();
+        Plan::desde(&[Operacion::Luces { cantidad: 100.0 }]).ejecutar(&mut img);
+        assert!(img.datos()[0] > 1.0, "se esperaba que el rojo cruzara el blanco");
+    }
+
+    #[test]
+    fn ningun_tonal_deja_un_canal_negativo() {
+        // Lo garantiza el tope por abajo de la curva: la ganancia nunca es
+        // negativa, así que no puede cambiarle el signo a nada.
+        let valores: Vec<f32> = (0..=100).map(|i| i as f32 / 100.0).collect();
+        for cantidad in [-100.0f32, -50.0, 50.0, 100.0] {
+            for op in [
+                Operacion::Sombras { cantidad },
+                Operacion::Luces { cantidad },
+                Operacion::Negros { cantidad },
+                Operacion::Blancos { cantidad },
+            ] {
+                let mut img = imagen(&valores);
+                Plan::desde(&[op]).ejecutar(&mut img);
+                for v in img.datos() {
+                    assert!(*v >= 0.0, "{op:?} dejó {v}");
+                }
+            }
+        }
+    }
     #[test]
     fn una_lista_neutra_no_recorre_los_pixeles() {
         let plan = Plan::desde(&[
             Operacion::Exposicion { pasos: 0.0 },
             Operacion::CurvaDeTono { activa: false },
             Operacion::Contraste { cantidad: 0.0 },
+            Operacion::Sombras { cantidad: 0.0 },
+            Operacion::Luces { cantidad: 0.0 },
+            Operacion::Negros { cantidad: 0.0 },
+            Operacion::Blancos { cantidad: 0.0 },
         ]);
         assert!(plan.es_identidad());
 

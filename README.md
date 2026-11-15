@@ -16,8 +16,9 @@ Este README explica **por qué** está hecho así. El qué se lee en el código.
 
 Abre **RAW de cámara** (DNG, CR2, CR3, NEF, ARW, RAF, RW2, ORF y más), JPG,
 PNG y TIFF de 8 o 16 bits. Los pinta en un lienzo con zoom y desplazamiento,
-enseña sus metadatos EXIF y su histograma, aplica exposición, curva de luces y
-contraste de forma no destructiva, compara con cómo se abrió manteniendo
+enseña sus metadatos EXIF y su histograma, revela con exposición, luces,
+sombras, blancos, negros, curva de luces y contraste, todo de forma no
+destructiva, compara con cómo se abrió manteniendo
 pulsado un botón, deshace y rehace, y exporta a JPEG, PNG o TIFF de 16 bits.
 
 Lo que **no** hace todavía: capas, máscaras, selecciones y guardar proyectos.
@@ -352,6 +353,49 @@ operaciones tratan cada valor por separado; la primera que mire al píxel
 entero —y la siguiente lo hace, porque necesita la luminancia— pintaría
 franjas de color en los bordes de cada trozo.
 
+### Los cuatro controles de zona actúan sobre la luminancia, no sobre los canales
+
+«Aclarar las sombras» es una frase sobre el brillo, no sobre el rojo. Si cada
+canal se tratara por su cuenta, un rojo oscuro saturado se aclararía solo por
+el canal rojo y el color se iría hacia el pastel. Calculando una ganancia a
+partir de la luminancia y multiplicando los tres canales por **ella**, el tono
+se queda exactamente donde estaba; hay una prueba que comprueba que las
+proporciones entre canales no se mueven.
+
+La zona se decide en espacio perceptual por el mismo motivo que el contraste:
+«¿esto es una sombra?» es una pregunta sobre cómo se ve.
+
+**Luces y sombras no mueven el blanco ni el negro**, y eso no es una promesa
+suelta: las máscaras llevan un pie y un hombro que las anulan exactamente en
+0 y en 1, y dos `assert` lo fijan. Blancos y negros sí los mueven, porque es
+justo lo que son. Por eso solo ese par puede quemar o empastar, y el aviso del
+histograma lo cuenta.
+
+Hay un límite que el tooltip confiesa en vez de esconder: la luminancia no se
+recorta nunca, pero en un color **muy saturado** cuyo canal más alto ya rozaba
+el blanco, aclarar sí puede cruzar ese canal. Hay una prueba que **fija** ese
+comportamiento —(0,95 · 0,40 · 0,10) con Luces a tope deja el rojo en 1,13—
+para que nadie lo «arregle» dentro de seis meses creyendo que es un fallo.
+Acotar la ganancia lo evitaría, y rompería algo peor: dos píxeles igual de
+claros recibirían trato distinto según lo saturados que fueran.
+
+Y no hay máscara espacial, a diferencia de Lightroom. Mirar a los vecinos vale
+un desenfoque guiado por pasada, y el muestreo de la vista ya ha tirado la
+mitad de esos vecinos. A cambio, **estas máscaras no pueden dar halos**, que
+es el defecto clásico del otro camino. El tooltip lo dice: actúa por brillo y
+no por zonas.
+
+Dentro de cada par el orden da igual —la máscara de luces se anula donde
+empieza la de sombras, y hay una prueba de que conmutan—, así que se eligió el
+orden en que los enseña el panel, que es el de Lightroom.
+
+### El panel enseña el orden en que se aplican las cosas
+
+Las secciones no son cajones por tema: son la misma raya que dibuja
+`Operacion::orden()`. Leído de arriba abajo —Luz, luego Interpretación— el
+panel enseña el orden canónico, que es la decisión más difícil de explicar del
+programa y que hasta ahora vivía escondida en un `sort_by_key`.
+
 ### Por dentro, una imagen es RGB lineal en `f32`. Siempre
 
 No hay un tipo para 8 bits y otro para 16: abrir un JPEG consiste en
@@ -477,7 +521,8 @@ Ultra, con una vista de 1.600 × 900:
 |---|---|
 | Abrir el TIFF de 16 bits y pasarlo a RGB lineal | 122 ms |
 | Muestrear la vista, sin revelar | 10 ms |
-| **Vista revelada (lo que cuesta un movimiento del deslizador)** | **13 ms** |
+| **Vista revelada, dos controles movidos** | **13,4 ms** |
+| **Vista revelada, seis controles movidos** | **14,5 ms** |
 | Pasar la vista a RGBA de 8 bits para el lienzo | 2,8 ms |
 | Histograma rápido (786.000 muestras) | 19 ms |
 | Histograma completo (1.040.000 muestras) | 86 ms |
@@ -492,6 +537,10 @@ aplicación, así que `npm run tauri dev` no es donde hay que mirar las cifras.
 Los 13 ms de la vista revelada son el número que importa: dan unos **75 cuadros
 por segundo** arrastrando un deslizador, y **no suben si la foto es más
 grande**, porque dependen del tamaño de la ventana.
+
+Las dos filas de la vista revelada son la prueba de que la fusión funciona:
+pasar de dos controles movidos a seis cuesta **1,1 ms**, no cuatro pasadas
+más. Sin fusionar serían unos 24 ms de más.
 
 Y por eso el histograma tiene dos modos: los 86 ms del completo son
 inaceptables sesenta veces por segundo, así que mientras se arrastra se pide el
@@ -553,7 +602,7 @@ usa LTO completo y una sola unidad de codegen.
 cargo test
 ```
 
-70 pruebas: 67 del núcleo, que corren en centésimas de segundo porque no
+81 pruebas: 78 del núcleo, que corren en centésimas de segundo porque no
 arrastran Tauri, y 3 de integración que recorren una sesión entera —abrir,
 ajustar, comparar, deshacer, exportar— contra el estado real de la aplicación.
 
@@ -639,20 +688,25 @@ dejaría inalcanzables, que es un control muerto por la puerta de atrás.
 
 En el orden en que tiene sentido hacerlo, y con el motivo del orden:
 
-1. **Soltar una foto en la ventana para abrirla.** Hoy no existe: hace falta
+1. **Temperatura y tinte.** Hay un problema de honradez que resolver antes:
+   los datos que llegan a las operaciones ya pasaron por el balance de blancos
+   de la cámara, así que un control ahí corrige, no mide. Hacerlo de verdad
+   obliga a revelar en espacio de cámara y arrastra la exposición automática
+   con él. Entra con su aviso en la interfaz o no entra.
+2. **Soltar una foto en la ventana para abrirla.** Hoy no existe: hace falta
    `onDragDropEvent` de Tauri, porque el `drop` del DOM se lo come el WebView.
    El sitio natural es la pantalla de «Abre una foto para empezar», y el día
    que esté, su botón «Abrir…» se retira y la aplicación llega a cero puertas
    dobles.
-2. **Más operaciones de revelado**: luces, sombras, blancos, negros,
+3. **Más operaciones de revelado**: luces, sombras, blancos, negros,
    temperatura y tinte. Cuando sean ocho o diez, el enum `Operacion` empezará a
    molestar y será el momento de partirlo; hoy no.
-3. **Guardar proyectos (`.pforge`).** El formato se definirá cuando la lista de
+4. **Guardar proyectos (`.pforge`).** El formato se definirá cuando la lista de
    operaciones esté asentada. Inventarlo ahora sería diseñar a ciegas, y
    cambiarlo después rompería los archivos de quien ya lo use.
-4. **Capas y máscaras.** Aquí es donde el modelo de «una lista plana de
+5. **Capas y máscaras.** Aquí es donde el modelo de «una lista plana de
    operaciones» se queda corto y habrá que revisarlo de verdad.
-5. **GPU**, si las cifras lo piden. Hoy no lo piden.
+6. **GPU**, si las cifras lo piden. Hoy no lo piden.
 
 ---
 
