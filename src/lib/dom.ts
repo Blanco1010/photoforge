@@ -11,7 +11,7 @@
  * y eso cabe en este archivo.
  */
 
-type Hijos = (Node | string | null | undefined | false)[];
+export type Hijos = (Node | string | null | undefined | false)[];
 
 interface Atributos {
   clase?: string;
@@ -20,7 +20,11 @@ interface Atributos {
   [atributo: string]: unknown;
 }
 
-/** Crea un elemento con sus atributos y sus hijos de una sentada. */
+/**
+ * Crea un elemento con sus atributos y sus hijos de una sentada.
+ *
+ * Para un SVG NO sirve: usa `icono()`, que está justo debajo y explica por qué.
+ */
 export function el<K extends keyof HTMLElementTagNameMap>(
   etiqueta: K,
   atributos: Atributos = {},
@@ -54,6 +58,49 @@ export function el<K extends keyof HTMLElementTagNameMap>(
     nodo.append(hijo);
   }
   return nodo;
+}
+
+/**
+ * Un icono SVG dibujado a partir de sus rutas.
+ *
+ * # Por qué esto no se puede hacer con `el()`
+ *
+ * `el()` llama a `document.createElement`, y `document.createElement("svg")`
+ * NO devuelve un SVG: devuelve un `HTMLUnknownElement` que no pinta nada, sin
+ * error y sin un aviso en la consola. Los iconos saldrían invisibles y se iría
+ * la tarde buscando el fallo en el CSS. Un SVG necesita `createElementNS` con
+ * su espacio de nombres, y por eso esta función vive aquí al lado de la trampa
+ * en vez de perdida en el archivo que dibuja los iconos.
+ *
+ * `trazo` es la ruta que va dibujada con línea, y puede llevar varias
+ * subrutas. `relleno` es la ruta opcional que va maciza.
+ */
+export function icono(trazo: string, relleno?: string): SVGSVGElement {
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("width", "20");
+  svg.setAttribute("height", "20");
+  svg.setAttribute("aria-hidden", "true");
+
+  if (relleno) {
+    const macizo = document.createElementNS(NS, "path");
+    macizo.setAttribute("d", relleno);
+    macizo.setAttribute("fill", "currentColor");
+    macizo.setAttribute("opacity", "0.45");
+    svg.append(macizo);
+  }
+
+  const linea = document.createElementNS(NS, "path");
+  linea.setAttribute("d", trazo);
+  linea.setAttribute("fill", "none");
+  linea.setAttribute("stroke", "currentColor");
+  linea.setAttribute("stroke-width", "1.6");
+  linea.setAttribute("stroke-linecap", "round");
+  linea.setAttribute("stroke-linejoin", "round");
+  svg.append(linea);
+
+  return svg;
 }
 
 /** Vacía un nodo. */

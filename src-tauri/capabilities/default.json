@@ -1,7 +1,13 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Permisos de la ventana de PhotoForge. Solo se concede lo que la aplicación usa: abrir el diálogo de elegir archivo y el de guardar. No se concede acceso al sistema de archivos desde el frontend: los archivos los lee y los escribe Rust, y la interfaz solo maneja rutas.",
+  "description": "Permisos de la ventana de PhotoForge. Solo se concede lo que la aplicación usa: abrir el diálogo de elegir archivo, el de guardar, poner el título de la ventana con el nombre de la foto, y cerrarla desde Archivo > Salir. No se concede acceso al sistema de archivos desde el frontend: los archivos los lee y los escribe Rust, y la interfaz solo maneja rutas.",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:allow-open", "dialog:allow-save"]
+  "permissions": [
+    "core:default",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "core:window:allow-set-title",
+    "core:window:allow-close"
+  ]
 }

@@ -14,6 +14,7 @@
 
 import { api, type Ficha } from "../lib/api";
 import { el, porCuadro } from "../lib/dom";
+import type { Herramienta } from "./herramientas";
 
 export interface InfoVista {
   zoom: number;
@@ -40,6 +41,8 @@ export class Lienzo {
   private cy = 0;
   /** Mientras está a `true` se pinta el original, para comparar. */
   private comparando = false;
+  /** Qué hace el botón izquierdo. El central siempre desplaza. */
+  private herramienta: Herramienta = "mano";
 
   /**
    * Solo puede haber un render en vuelo.
@@ -54,6 +57,8 @@ export class Lienzo {
 
   /** Para que la barra de estado pueda enseñar el zoom y el tiempo. */
   alPintar?: (info: InfoVista) => void;
+  /** El color leído por el cuentagotas, o `null` si se pinchó fuera de la foto. */
+  alMuestrear?: (rgb: [number, number, number] | null) => void;
 
   constructor() {
     this.canvas = el("canvas", { clase: "lienzo__canvas" });
@@ -91,6 +96,54 @@ export class Lienzo {
     if (!this.ficha) return;
     this.zoom = 1;
     this.refrescar();
+  }
+
+  /**
+   * Cambia lo que hace el botón izquierdo.
+   *
+   * El cursor se cambia con una clase y no con una imagen: `grab` y
+   * `crosshair` son cursores que pone el sistema, así que no hay ni un
+   * recurso nuevo que cargar ni que escalar en una pantalla con escalado.
+   */
+  ponerHerramienta(h: Herramienta): void {
+    this.herramienta = h;
+    this.canvas.classList.toggle("lienzo__canvas--cuentagotas", h === "cuentagotas");
+  }
+
+  /**
+   * Lee el píxel del lienzo bajo el cursor.
+   *
+   * # Qué es este número y qué NO es
+   *
+   * Es el valor **en pantalla**: RGBA de 8 bits del lienzo ya pintado, o sea
+   * ya revelado, ya pasado por la curva de sRGB y ya remuestreado al tamaño
+   * de la ventana. Dos consecuencias que hay que decir sin rodeos:
+   *
+   * - No puede contestar «¿le queda detalle a esa nube?». Lo que pasa de 1,0
+   *   en luz lineal llega al lienzo recortado a 255, así que ahí el número ya
+   *   no distingue. Esa pregunta la contesta el recuento de recorte del
+   *   histograma, que está en el panel.
+   * - Por debajo del 100 % de zoom es la media de varios píxeles de la foto.
+   *
+   * Una lectura honrada de la escena necesitaría un comando `muestrear(x, y)`
+   * en Rust que leyera la imagen lineal en `f32`. No existe, y por eso la
+   * casilla de la barra de estado se llama «En pantalla».
+   *
+   * Devuelve `null` si se pinchó fuera de la foto: ahí el alfa del lienzo es
+   * 0, y enseñar un negro que no está en la imagen sería mentir.
+   */
+  private muestrear(mx: number, my: number): [number, number, number] | null {
+    const dpr = window.devicePixelRatio || 1;
+    const x = Math.floor(mx * dpr);
+    const y = Math.floor(my * dpr);
+    if (x < 0 || y < 0 || x >= this.canvas.width || y >= this.canvas.height) return null;
+    // NO se pide `willReadFrequently` al crear el contexto: lo pediría
+    // cualquiera al escribir esta línea, y cambiaría el lienzo entero a un
+    // camino de software que se pagaría en los milisegundos de cada cuadro,
+    // para una lectura de un píxel que ocurre cuando alguien hace clic.
+    const d = this.ctx.getImageData(x, y, 1, 1).data;
+    if (d[3] === 0) return null;
+    return [d[0], d[1], d[2]];
   }
 
   comparar(activo: boolean): void {
@@ -141,6 +194,25 @@ export class Lienzo {
 
     this.canvas.addEventListener("pointerdown", (e) => {
       if (!this.ficha) return;
+
+      // El botón central desplaza SIEMPRE, con cualquier herramienta. No es
+      // un extra: es la salida que hace posible que existan modos. Sin ella,
+      // con el cuentagotas elegido el arrastre deja de mover la foto y nada
+      // en la pantalla lo explica — la herramienta parece rota.
+      const desplaza = e.button === 1 || this.herramienta === "mano";
+
+      if (!desplaza) {
+        if (e.button === 0) {
+          const r = this.nodo.getBoundingClientRect();
+          this.alMuestrear?.(this.muestrear(e.clientX - r.left, e.clientY - r.top));
+        }
+        return;
+      }
+
+      // Sin esto, el botón central dispara el desplazamiento automático del
+      // WebView y aparece el círculo de las cuatro flechas.
+      if (e.button === 1) e.preventDefault();
+
       arrastrando = true;
       ultimoX = e.clientX;
       ultimoY = e.clientY;

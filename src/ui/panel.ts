@@ -3,7 +3,7 @@
  */
 
 import { api, type Ficha, type Histograma, type Operacion } from "../lib/api";
-import { el, vaciar } from "../lib/dom";
+import { el, vaciar, type Hijos } from "../lib/dom";
 
 /** Dibuja el histograma en un lienzo pequeño. */
 class DibujoHistograma {
@@ -169,6 +169,53 @@ class Deslizador {
   }
 }
 
+/**
+ * Una sección plegable del panel.
+ *
+ * # Por qué una función de seis líneas y no una clase `Seccion`
+ *
+ * La versión con clase tendría `plegar()`, `estaPlegada` y un evento propio:
+ * estado que mantener para algo que el navegador ya hace solo. `<details>` da
+ * el plegado gratis, es accesible con el teclado de serie, y **ya se usa en
+ * este mismo archivo** para «Todos los campos EXIF». Así no entra ni un
+ * concepto nuevo en el proyecto: se usa dos veces el mismo.
+ *
+ * El `<h2>` se queda DENTRO del `<summary>`, que la especificación permite: el
+ * panel es el único sitio de la aplicación con encabezados, y perderlos
+ * convertiría el lateral en una sopa de divs para un lector de pantalla.
+ *
+ * # Por qué se recuerda si estaba plegada
+ *
+ * Por el mismo motivo que existe `recuperar()` en `main.ts`: en desarrollo,
+ * cualquier cambio en un `.ts` recarga la página, y sin esto el panel se
+ * desplegaría entero cada vez.
+ */
+function seccion(
+  id: string,
+  titulo: string,
+  abiertaPorOmision: boolean,
+  ...hijos: Hijos
+): HTMLDetailsElement {
+  const clave = `photoforge.panel.${id}`;
+  const guardado = localStorage.getItem(clave);
+  const abierta = guardado === null ? abiertaPorOmision : guardado === "abierto";
+
+  const nodo = el(
+    "details",
+    { clase: "panel__seccion", open: abierta },
+    el(
+      "summary",
+      { clase: "panel__resumen" },
+      el("h2", { clase: "panel__titulo", texto: titulo }),
+    ),
+    ...hijos,
+  );
+  nodo.addEventListener("toggle", () => {
+    localStorage.setItem(clave, nodo.open ? "abierto" : "cerrado");
+  });
+  return nodo;
+}
+
 /** Una casilla con su etiqueta. Para lo que está o no está. */
 class Casilla {
   readonly nodo: HTMLLabelElement;
@@ -215,7 +262,7 @@ export class Panel {
       -6,
       6,
       0.05,
-      (v) => `${v > 0 ? "+" : ""}${v.toFixed(2)} EV`,
+      (v) => `${v > 0 ? "+" : ""}${v.toFixed(2).replace(".", ",")} EV`,
       (v) => this.alAjustar({ clase: "exposicion", pasos: v }, false),
       () => this.alAjustar({ clase: "exposicion", pasos: Number(this.valorExposicion()) }, true),
     );
@@ -249,28 +296,28 @@ export class Panel {
     this.nodo = el(
       "aside",
       { clase: "panel" },
-      el(
-        "section",
-        { clase: "panel__seccion" },
-        el("h2", { clase: "panel__titulo", texto: "Histograma" }),
+      // El orden no es arbitrario. El histograma es el instrumento que se
+      // MIRA mientras la otra mano arrastra el deslizador, así que va pegado
+      // a los deslizadores y por encima de ellos.
+      seccion(
+        "histograma",
+        "Histograma",
+        true,
         el("div", { clase: "histograma" }, this.histograma.nodo),
         this.avisoRecorte,
       ),
-      el(
-        "section",
-        { clase: "panel__seccion" },
-        el("h2", { clase: "panel__titulo", texto: "Revelado" }),
+      seccion(
+        "revelado",
+        "Revelado",
+        true,
         this.exposicion.nodo,
         this.contraste.nodo,
         this.curva.nodo,
       ),
-      el(
-        "section",
-        { clase: "panel__seccion panel__seccion--crece" },
-        el("h2", { clase: "panel__titulo", texto: "Metadatos" }),
-        this.resumen,
-        this.detalleExif,
-      ),
+      // Metadatos empieza CERRADA: se lee una vez al abrir la foto y nunca
+      // más, es la que crece, y así enseña el plegado en el primer arranque
+      // sin que nadie tenga que contarlo.
+      seccion("metadatos", "Metadatos", false, this.resumen, this.detalleExif),
     );
   }
 
@@ -333,7 +380,7 @@ export class Panel {
           ? "RAW de cámara (luz medida, sin interpretar)"
           : "archivo ya revelado",
       ],
-      ["Tamaño", `${ficha.ancho} × ${ficha.alto} · ${ficha.megapixeles.toFixed(1)} Mpx`],
+      ["Tamaño", `${ficha.ancho} × ${ficha.alto} · ${ficha.megapixeles.toFixed(1).replace(".", ",")} Mpx`],
       ["En memoria", `${ficha.megabytes_en_memoria} MB en RGB lineal`],
       ["Cámara", m.camara],
       ["Objetivo", m.objetivo],

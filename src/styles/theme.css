@@ -49,10 +49,23 @@
 
   --radio: 8px;
   --radio-chico: 5px;
-  --barra: 56px;
-  --estado: 28px;
+
+  /*
+   * Las tres franjas de la cáscara.
+   *
+   * La barra de menús es fina a propósito: 26 px es lo que mide una en
+   * Windows, y cada píxel que no se lleva la cáscara se lo queda la foto.
+   * La columna de herramientas es de 44, que es lo que necesita un icono de
+   * 20 con sitio para pulsarlo sin apuntar.
+   */
+  --menu: 26px;
+  --herramientas: 44px;
+  --estado: 24px;
   --panel-ancho: 300px;
   --alto-control: 30px;
+
+  /* La única sombra: la del menú desplegado sobre la foto. */
+  --sombra-alta: 0 8px 24px rgba(0, 0, 0, 0.5);
 
   --fuente: "Segoe UI", system-ui, -apple-system, sans-serif;
   --fuente-mono: "Cascadia Code", "Consolas", ui-monospace, monospace;

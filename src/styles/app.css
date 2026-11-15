@@ -23,99 +23,220 @@ body {
   overflow: hidden;
 }
 
+/*
+ * Dos filas y no tres: la barra de estado NO cruza la ventana, vive dentro de
+ * la columna central. Eso es lo que permite que el panel suba hasta debajo de
+ * los menús, como los muelles de GIMP, y es el cambio que más altera la
+ * silueta de la aplicación por menos CSS.
+ */
 #app {
   display: grid;
-  grid-template-rows: var(--barra) 1fr var(--estado);
+  grid-template-rows: var(--menu) 1fr;
 }
 
-/* ---------- Barra ---------- */
+/* ---------- Barra de menús ---------- */
 
-.barra {
+.barramenus {
   display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 0 14px;
+  align-items: stretch;
   background: var(--fondo-panel);
   border-bottom: 1px solid var(--borde);
+  /* Sin esto, el doble clic en un título selecciona la palabra. */
+  user-select: none;
+  /* El desplegable se pinta sobre el lienzo, y el lienzo es un canvas. */
+  position: relative;
+  z-index: 10;
 }
 
-.barra__identidad {
-  display: flex;
-  flex-direction: column;
-  min-width: 180px;
-  max-width: 280px;
-  margin-right: 6px;
+.menu {
+  position: relative;
 }
 
-.barra__titulo {
-  font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.barra__subtitulo {
-  color: var(--texto-tenue);
-  font-size: 11px;
-}
-
-.barra__grupo {
-  display: flex;
-  gap: 6px;
-}
-
-.barra__grupo--final {
-  margin-left: auto;
-}
-
-.boton {
-  height: var(--alto-control);
-  padding: 0 12px;
-  background: var(--fondo-elevado);
+.menu__titulo {
+  height: 100%;
+  padding: 0 11px;
+  background: transparent;
   color: var(--texto);
-  border: 1px solid var(--borde);
-  border-radius: var(--radio-chico);
+  border: none;
   font-family: inherit;
   font-size: 12px;
-  cursor: pointer;
-  transition: background var(--transicion), border-color var(--transicion);
-}
-
-.boton:hover:not(:disabled) {
-  background: var(--fondo-hover);
-  border-color: var(--borde-fuerte);
-}
-
-.boton:disabled {
-  opacity: 0.38;
   cursor: default;
 }
 
-.boton--principal {
-  background: var(--acento);
-  color: var(--texto-sobre-acento);
-  border-color: transparent;
-  font-weight: 600;
+.menu__titulo:hover {
+  background: var(--fondo-hover);
 }
 
-.boton--principal:hover:not(:disabled) {
-  background: var(--acento-hover);
+/*
+ * El estado abierto se pinta desde `aria-expanded` y no desde una clase.
+ *
+ * Es una sola fuente de verdad: con una clase para el aspecto y un atributo
+ * para el lector de pantalla serían dos bits que se desincronizan el día que
+ * alguien cierre el menú por un camino nuevo. Así, pintar mal y anunciar mal
+ * es literalmente imposible.
+ */
+.menu__titulo[aria-expanded="true"] {
+  background: var(--fondo-activo);
 }
 
-.boton--activo {
+.menu__lista {
+  display: none;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  min-width: 230px;
+  padding: 4px 0;
+  background: var(--fondo-elevado);
+  border: 1px solid var(--borde-fuerte);
+  border-radius: 0 0 var(--radio-chico) var(--radio-chico);
+  box-shadow: var(--sombra-alta);
+  z-index: 20;
+}
+
+.menu__titulo[aria-expanded="true"] + .menu__lista {
+  display: block;
+}
+
+.menu__entrada {
+  display: flex;
+  align-items: center;
+  gap: 26px;
+  width: 100%;
+  padding: 5px 12px;
+  background: transparent;
+  color: var(--texto);
+  border: none;
+  font-family: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: default;
+}
+
+/*
+ * Una sola noción de «entrada actual», y es el foco del DOM: pasar el ratón
+ * mueve el foco de verdad. Con dos nociones, la siguiente flecha saltaría
+ * desde la entrada que el usuario no estaba mirando.
+ */
+.menu__entrada:hover:not(:disabled),
+.menu__entrada:focus {
+  background: var(--acento-tenue);
+  outline: none;
+}
+
+.menu__entrada:disabled {
+  color: var(--texto-tenue);
+  opacity: 0.55;
+}
+
+.menu__texto {
+  flex: 1;
+}
+
+.menu__atajo {
+  color: var(--texto-tenue);
+  font-family: var(--fuente-mono);
+  font-size: 11px;
+}
+
+.menu__separador {
+  height: 1px;
+  margin: 4px 10px;
+  background: var(--borde);
+}
+
+/*
+ * El anillo de foco solo con el teclado. El invariante de la barra obliga a
+ * devolver el foco al título al cerrar; con `:focus` a secas, cada uso con el
+ * ratón dejaría un recuadro que parece un error.
+ */
+.menu__titulo:focus-visible,
+.herramienta:focus-visible {
+  outline: 2px solid var(--acento);
+  outline-offset: -2px;
+}
+
+/* ---------- Columna de herramientas ---------- */
+
+.herramientas {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 5px 0;
+  background: var(--fondo-panel);
+  border-right: 1px solid var(--borde);
+  user-select: none;
+}
+
+.herramienta {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  background: transparent;
+  color: var(--texto-suave);
+  border: 1px solid transparent;
+  border-radius: var(--radio-chico);
+  cursor: pointer;
+  transition: background var(--transicion), color var(--transicion);
+}
+
+.herramienta:hover:not(:disabled) {
+  background: var(--fondo-hover);
+  color: var(--texto);
+}
+
+.herramienta--activa {
+  background: var(--fondo-activo);
+  border-color: var(--acento);
+  color: var(--texto);
+}
+
+.herramienta--pulsada {
   background: var(--acento-tenue);
   border-color: var(--acento);
+  color: var(--texto);
 }
 
-.boton--comparar {
-  min-width: 64px;
+.herramienta:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+/*
+ * La raya no es decoración: sin ella, el botón que se mantiene pulsado
+ * parece un tercer modo, y el usuario intentaría hacerle clic y soltar
+ * esperando quedarse dentro.
+ */
+.herramientas__separador {
+  width: 20px;
+  height: 1px;
+  margin: 8px 0;
+  background: var(--borde);
 }
 
 /* ---------- Cuerpo ---------- */
 
 .cuerpo {
   display: grid;
-  grid-template-columns: 1fr var(--panel-ancho);
+  grid-template-columns: var(--herramientas) 1fr var(--panel-ancho);
+  min-height: 0;
+}
+
+/* `Ver > Ocultar el panel` (tecla P): el lienzo se lleva la ventana entera. */
+.cuerpo--sin-panel {
+  grid-template-columns: var(--herramientas) 1fr;
+}
+
+.cuerpo--sin-panel .panel {
+  display: none;
+}
+
+.centro {
+  display: grid;
+  grid-template-rows: 1fr var(--estado);
+  min-width: 0;
   min-height: 0;
 }
 
@@ -149,6 +270,10 @@ body {
 
 .lienzo__canvas--agarrando {
   cursor: grabbing;
+}
+
+.lienzo__canvas--cuentagotas {
+  cursor: crosshair;
 }
 
 .vacio {
@@ -195,14 +320,50 @@ body {
   border-bottom: 1px solid var(--borde-suave);
 }
 
-.panel__seccion--crece {
-  flex: 1;
-  min-height: 0;
+/*
+ * El resumen es la cabecera que se pulsa para plegar. El triángulo nativo se
+ * apaga y se dibuja un galón a la derecha, como el expansor de un muelle.
+ */
+.panel__resumen {
+  display: flex;
+  align-items: center;
+  list-style: none;
+  cursor: pointer;
+}
+
+.panel__resumen::-webkit-details-marker {
+  display: none;
+}
+
+.panel__resumen::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  margin-left: auto;
+  border-right: 1.5px solid var(--texto-tenue);
+  border-bottom: 1.5px solid var(--texto-tenue);
+  transform: rotate(-45deg);
+  transition: transform var(--transicion);
+}
+
+.panel__seccion[open] > .panel__resumen::after {
+  transform: rotate(45deg);
+}
+
+.panel__seccion[open] > .panel__resumen {
+  margin-bottom: 10px;
+}
+
+.panel__resumen:hover .panel__titulo {
+  color: var(--texto-suave);
+}
+
+.panel__seccion:last-child {
   border-bottom: none;
 }
 
 .panel__titulo {
-  margin: 0 0 10px;
+  margin: 0;
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.06em;
@@ -404,10 +565,18 @@ body {
 
 /* ---------- Estado ---------- */
 
+/*
+ * Seis casillas y un solo escritor por casilla.
+ *
+ * Antes era un nodo que se vaciaba entero y lo escribía todo el mundo, así
+ * que el zoom de cada repintado borraba el «Exportado: …». Con casillas
+ * separadas eso deja de ser algo que recordar y pasa a ser imposible.
+ */
 .estado {
   display: flex;
   align-items: center;
-  padding: 0 14px;
+  gap: 14px;
+  padding: 0 12px;
   background: var(--fondo-panel);
   border-top: 1px solid var(--borde);
   color: var(--texto-tenue);
@@ -415,11 +584,44 @@ body {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   overflow: hidden;
+}
+
+.estado__original {
+  color: var(--acento);
+  font-weight: 600;
+  letter-spacing: 0.07em;
+}
+
+/* La única flexible: las demás llevan ancho reservado para que no bailen. */
+.estado__mensaje {
+  flex: 1;
+  overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.estado__error {
+.estado__mensaje--error {
   color: var(--peligro);
+}
+
+.estado__pantalla,
+.estado__zoom,
+.estado__tamano,
+.estado__ms {
+  font-family: var(--fuente-mono);
+}
+
+.estado__pantalla {
+  min-width: 164px;
+}
+
+.estado__zoom {
+  min-width: 52px;
+  text-align: right;
+}
+
+.estado__ms {
+  min-width: 46px;
+  text-align: right;
 }
 
 /* La barra de desplazamiento, para que no sea la blanca de Windows sobre un

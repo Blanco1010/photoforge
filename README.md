@@ -214,6 +214,103 @@ proyecto y no de quien lo use.
 
 ## Las decisiones y sus motivos
 
+### La cáscara es la de GIMP, y lo interesante es lo que se le ha quitado
+
+Barra de menús arriba, columna de herramientas a la izquierda, paneles que se
+pliegan a la derecha, barra de estado **dentro** de la columna central —no
+cruzando la ventana— para que el panel suba hasta los menús. Quien venga de
+GIMP encuentra las cosas donde las deja GIMP.
+
+Lo que NO se ha copiado, cada cosa por un motivo distinto:
+
+- **Menús Seleccionar, Imagen, Capa y Filtros**: no hay selecciones, ni
+  recorte, ni capas, ni filtros. Es el hueco de lo que no existe.
+- **Menú Colores**: este es el interesante. Exposición, contraste y curva SON
+  material del menú Colores de GIMP, pero allí abren un diálogo y aquí los
+  tres controles están puestos para siempre en el panel. Una entrada de menú
+  sería una segunda puerta al mismo deslizador.
+- **Menú Herramientas**: GIMP lo necesita porque su caja se puede ocultar y
+  porque tiene cuarenta herramientas. Con tres siempre visibles, es un
+  duplicado.
+- **Menú Ayuda**: la única entrada honrada sería «Acerca de», y ese diálogo no
+  existe. Cuando exista, el menú aparece.
+- **El cuadro de «Opciones de herramienta»**: mano, cuentagotas y comparar no
+  tienen ni una opción. Sería una caja vacía, o sea el control que no hace
+  nada, cazado antes de dibujarlo.
+- **Reglas y guías**: no hay recorte ni alineación que las use, y se comerían
+  40 px del único sitio donde se juzga el enfoque.
+- **Acoplamiento de verdad** —arrastrar una sección a otra columna,
+  desprenderla, pestañas de muelles—: centenares de líneas de geometría para
+  tres paneles que siempre acaban en el mismo sitio, para permitir seis
+  ordenaciones de las cuales cinco son peores que la buena. «Acoplable» es lo
+  caro; «se pliega» es lo que de verdad se siente, y cuesta un `<details>`.
+
+La regla que decide todas esas negativas es la misma: **ni un control que no
+haga nada, y una sola puerta por acción.** Después de la cáscara hay
+exactamente un sitio donde está cada cosa, y la tabla de atajos de abajo es la
+prueba.
+
+### El zoom no es una herramienta, y el porcentaje del pie no es un control
+
+La lupa de GIMP no está. La rueda ya amplía anclada al cursor, el doble clic
+ya ajusta a la ventana, y `Ver` tiene sus dos entradas con sus teclas `0` y
+`1`: un icono de lupa sería la **cuarta** puerta al mismo acto, y la peor de
+las cuatro. Quitarla no retira ninguna capacidad.
+
+Por lo mismo, el `47,3 %` de la barra de estado es una LECTURA y no lleva
+botones de [Ajustar] y [1:1] al lado. El doble clic sobre la foto ya ajusta
+sin soltar el ratón, que es mejor que cualquier botón en una esquina.
+
+### La condición para que la columna de herramientas pueda existir
+
+En cuanto hay modos excluyentes, con el cuentagotas elegido el arrastre con el
+botón izquierdo deja de desplazar la foto — y si nada lo explica, el usuario
+arrastra, no pasa nada y la herramienta parece rota.
+
+Por eso **el botón central desplaza con cualquier herramienta**, y va escrito
+en el tooltip del cuentagotas, que es el momento exacto en que hace falta
+saberlo. GIMP no sufre esto porque su desplazamiento no vive en la caja: vive
+en el botón central, en la barra espaciadora y en las barras del lienzo, y
+aquí no había ninguna de las tres. Copiar la caja sin copiar sus salidas
+habría hecho la cáscara nueva peor que la barra de botones que sustituye.
+
+### Qué dice y qué no dice el número del cuentagotas
+
+Lee `getImageData` del lienzo ya pintado: es sRGB de 8 bits, ya revelado y ya
+remuestreado al tamaño de la ventana. Dos consecuencias que hay que decir sin
+rodeos:
+
+- **No puede contestar «¿le queda detalle a esa nube?»**. Lo que pasa de 1,0
+  en luz lineal llega al lienzo recortado a 255, así que ahí el número deja de
+  distinguir. Esa pregunta la contesta el recuento de recorte del histograma.
+- Por debajo del 100 % de zoom es la media de varios píxeles de la foto.
+
+Por eso la casilla se llama **«En pantalla»** y no «Color»: el asterisco va en
+el rótulo que el usuario lee siempre, no en un tooltip ni en un comentario del
+fuente. Una lectura honrada de la escena necesitaría un comando
+`muestrear(x, y)` en Rust que leyera la imagen lineal en `f32`; no existe, y
+el código lo dice donde se escribe el número.
+
+### Seis casillas en la barra de estado, y un solo escritor por casilla
+
+Esto arregla un fallo real, no es maquillaje. El pie era un nodo que se
+vaciaba y se volvía a escribir entero, y lo escribía todo el mundo: cada
+repintado del lienzo metía ahí el zoom, así que «Exportado: C:\…» —o un error
+en rojo— duraba hasta que el ratón rozaba la foto. El mensaje más importante
+de la sesión se perdía por mover la rueda. Con seis nodos y seis métodos que
+no se pisan, eso deja de ser algo que recordar y pasa a ser imposible.
+
+### Una tabla de acciones, que es lo único que acorta el código
+
+El mismo dato —«Exportar como…, Ctrl+E, llama a exportar, se activa si hay
+foto»— lo necesitan tres sitios: el menú lo pinta, el teclado lo dispara y el
+rótulo del atajo sale de él. Antes estaba escrito tres veces, y ya había un
+desajuste: un botón rotulaba «Ctrl+Y» mientras el teclado atendía además
+Ctrl+Mayús+Z. Con la tabla, lo que se enseña y lo que dispara salen del mismo
+sitio y no pueden separarse. El atajo se declara en CAMPOS y no en una cadena
+`"Ctrl+E"`: un mini-lenguaje con su analizador es justo la infraestructura que
+este proyecto evita.
+
 ### Por dentro, una imagen es RGB lineal en `f32`. Siempre
 
 No hay un tipo para 8 bits y otro para 16: abrir un JPEG consiste en
@@ -458,9 +555,12 @@ src-tauri/        la cáscara: ventana, estado y comandos
 
 src/              la interfaz
   lib/api.ts        la frontera con Rust, toda en un archivo
-  ui/lienzo.ts      zoom, desplazamiento y pintado
-  ui/panel.ts       histograma, deslizadores y metadatos
-  ui/barra.ts       la barra de herramientas
+  lib/dom.ts        el ayudante el() y el icono() con createElementNS
+  ui/menu.ts        la barra de menús, el teclado y la tabla de acciones
+  ui/herramientas.ts  la columna: mano, cuentagotas y comparar
+  ui/lienzo.ts      zoom, desplazamiento, pintado y cuentagotas
+  ui/panel.ts       histograma, deslizadores y metadatos, plegables
+  ui/estado.ts      la barra de estado, seis casillas sin pisarse
 ```
 
 La regla que mantiene esto en pie: **en `src-tauri` no se escribe ni un cálculo
@@ -474,13 +574,23 @@ sobre píxeles**. Si hace falta uno, su sitio es `pf-image`.
 |---|---|
 | `Ctrl+O` | Abrir |
 | `Ctrl+E` | Exportar |
+| `Ctrl+W` | Cerrar la foto |
+| `Ctrl+Q` | Salir |
 | `Ctrl+Z` / `Ctrl+Y` | Deshacer / Rehacer |
-| `0` | Ver la foto entera |
-| `1` | Un píxel por píxel |
-| `\` (mantener) | Enseñar el original |
+| `0` | Ajustar a la ventana |
+| `1` | Tamaño real 1:1 |
+| `P` | Ocultar o enseñar el panel |
+| `M` / `C` | Mano / Cuentagotas |
+| `\` (mantener) | Ver el original |
 | Rueda | Zoom anclado al cursor |
-| Arrastrar | Desplazar |
-| Doble clic | Ver la foto entera |
+| Arrastrar | Desplazar (con la Mano) |
+| Arrastrar con el botón central | Desplazar, con cualquier herramienta |
+| Doble clic | Ajustar a la ventana |
+
+La tecla del panel es `P` y no `Tab` a propósito: `Tab` es la única cuyo
+comportamiento por omisión esta interfaz necesita, porque los deslizadores son
+los únicos controles a los que hoy se llega con el teclado. Robarla los
+dejaría inalcanzables, que es un control muerto por la puerta de atrás.
 
 ---
 
@@ -488,9 +598,11 @@ sobre píxeles**. Si hace falta uno, su sitio es `pf-image`.
 
 En el orden en que tiene sentido hacerlo, y con el motivo del orden:
 
-1. **Una cáscara de verdad**: barra de menús, columna de herramientas y
-   paneles acoplables. Hoy la interfaz es una barra de botones, y eso se
-   queda corto en cuanto haya más de tres ajustes.
+1. **Soltar una foto en la ventana para abrirla.** Hoy no existe: hace falta
+   `onDragDropEvent` de Tauri, porque el `drop` del DOM se lo come el WebView.
+   El sitio natural es la pantalla de «Abre una foto para empezar», y el día
+   que esté, su botón «Abrir…» se retira y la aplicación llega a cero puertas
+   dobles.
 2. **Más operaciones de revelado**: luces, sombras, blancos, negros,
    temperatura y tinte. Cuando sean ocho o diez, el enum `Operacion` empezará a
    molestar y será el momento de partirlo; hoy no.
