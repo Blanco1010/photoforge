@@ -5,7 +5,7 @@ use std::path::Path;
 use pf_core::{Error, Resultado};
 use rayon::prelude::*;
 
-use crate::{CANALES, Imagen, color::TablaSalida};
+use crate::{Imagen, color::TablaSalida};
 
 /// Los formatos a los que PhotoForge sabe exportar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -97,14 +97,10 @@ fn escribir(img: &Imagen, ruta: &Path, formato: Formato) -> Resultado<()> {
     }
 }
 
-/// Cuántos canales tiene un píxel, repetido aquí solo para que el `use` de
-/// `CANALES` no quede sin usar si alguien recorta este archivo.
-#[allow(dead_code)]
-const _CANALES: usize = CANALES;
-
 #[cfg(test)]
 mod pruebas {
     use super::*;
+    use crate::CANALES;
     use pf_core::Dimensiones;
 
     fn imagen_gris() -> Imagen {

@@ -1,6 +1,6 @@
 //! Las operaciones de revelado.
 
-use pf_image::{CANALES, Imagen, color};
+use pf_image::{Imagen, color};
 use rayon::prelude::*;
 
 /// Una operación de revelado con sus parámetros.
@@ -131,14 +131,11 @@ fn contraste(img: &mut Imagen, cantidad: f32) {
     });
 }
 
-/// Repetido para que `CANALES` siga siendo visible desde este módulo.
-#[allow(dead_code)]
-const _CANALES: usize = CANALES;
-
 #[cfg(test)]
 mod pruebas {
     use super::*;
     use pf_core::Dimensiones;
+    use pf_image::CANALES;
 
     fn imagen(valores: &[f32]) -> Imagen {
         let dim = Dimensiones::nueva(valores.len() as u32, 1).unwrap();
