@@ -92,6 +92,19 @@ impl Orientacion {
         self.pasos().0
     }
 
+    /// La orientación que deshace esta.
+    ///
+    /// Seis de las ocho son su propia inversa —los espejos, el 180°, la
+    /// traspuesta, la transversa y la identidad—; solo los dos giros de 90°
+    /// se deshacen el uno al otro.
+    pub fn inversa(self) -> Orientacion {
+        match self.0 {
+            6 => Orientacion::GIRO_IZQUIERDA,
+            8 => Orientacion::GIRO_DERECHA,
+            _ => self,
+        }
+    }
+
     /// La orientación que resulta de aplicar `self` y DESPUÉS `otra`.
     ///
     /// # De dónde sale esta fórmula
@@ -146,6 +159,81 @@ fn desde_pasos(trasponer: bool, espejo_h: bool, espejo_v: bool) -> Orientacion {
         (true, true, true) => 7,
         (true, true, false) => 8,
     })
+}
+
+/// Los seis coeficientes del mapa afín de coordenadas CONTINUAS de la foto
+/// enderezada a coordenadas continuas del original.
+///
+/// `[ax, bx, cx, ay, by, cy]`, con `ox = ax·u + bx·v + cx` y
+/// `oy = ay·u + by·v + cy`.
+///
+/// Son SEIS y no cuatro porque las cuatro orientaciones que trasponen hacen
+/// que `ox` dependa de `v` y `oy` de `u`. Con cuatro coeficientes, un giro de
+/// 90° pondría el degradado en el eje equivocado, y eso no se ve hasta tener
+/// una foto girada con una franja delante.
+pub fn afin_a_origen(pasos: (bool, bool, bool), ancho: i64, alto: i64) -> [f32; 6] {
+    let (trasponer, espejo_h, espejo_v) = pasos;
+    let (a, b) = (ancho as f32, alto as f32);
+    // Deshacer la trasposición: lo que en la vista es `u` pasa a ser `v`.
+    let (mut ax, mut bx, mut ay, mut by) = if trasponer {
+        (0.0, 1.0, 1.0, 0.0)
+    } else {
+        (1.0, 0.0, 0.0, 1.0)
+    };
+    let (mut cx, mut cy) = (0.0f32, 0.0f32);
+    if espejo_h {
+        ax = -ax;
+        bx = -bx;
+        cx = a - cx;
+    }
+    if espejo_v {
+        ay = -ay;
+        by = -by;
+        cy = b - cy;
+    }
+    [ax, bx, cx, ay, by, cy]
+}
+
+/// Dónde cae, en el original, el PUNTO continuo (x, y) de la foto enderezada.
+///
+/// # Ojo a la diferencia con `indice_en_origen`, que es la trampa del archivo
+///
+/// Con ÍNDICES, el espejo es `ancho − 1 − x`: el píxel 0 reflejado es el
+/// W−1. Con coordenadas CONTINUAS es `ancho − x`, porque una coordenada
+/// nombra una posición en la rejilla y el centro del píxel `i` está en
+/// `i + 0,5`: el centro del 0 es 0,5 y reflejado tiene que dar W−0,5. Con la
+/// fórmula de los índices daría W−1,5, que es el centro del píxel W−2.
+///
+/// Dicho sin inflarlo: medio píxel en una rampa repartida sobre novecientos
+/// no se ve. La fórmula correcta se escribe porque cuesta cero y porque
+/// tiene que vivir pegada a la otra para que nadie «arregle» una
+/// convirtiéndola en la otra.
+pub fn punto_en_origen(
+    pasos: (bool, bool, bool),
+    ancho: i64,
+    alto: i64,
+    x: f32,
+    y: f32,
+) -> (f32, f32) {
+    let [ax, bx, cx, ay, by, cy] = afin_a_origen(pasos, ancho, alto);
+    (ax * x + bx * y + cx, ay * x + by * y + cy)
+}
+
+/// El camino de vuelta: dónde cae, en la foto enderezada, un punto del
+/// original.
+///
+/// Sale de aplicar la orientación INVERSA sobre la rejilla de la vista, así
+/// que el álgebra existe una sola vez y no hay una segunda copia que se
+/// pueda desincronizar.
+pub fn punto_en_vista(o: Orientacion, original: Dimensiones, x: f32, y: f32) -> (f32, f32) {
+    let vista = o.dimensiones_resultantes(original);
+    punto_en_origen(
+        o.inversa().pasos_publicos(),
+        vista.ancho as i64,
+        vista.alto as i64,
+        x,
+        y,
+    )
 }
 
 /// De dónde sale, en el original, el píxel (x, y) de la foto ya enderezada.
@@ -416,6 +504,61 @@ mod pruebas {
         }
     }
 
+
+    #[test]
+    fn la_inversa_deshace_la_orientacion() {
+        for v in TODAS {
+            let o = Orientacion::desde_exif(v as u16);
+            assert!(o.componer(o.inversa()).no_hay_que_hacer_nada(), "la inversa de {v} falla");
+            assert!(o.inversa().componer(o).no_hay_que_hacer_nada());
+        }
+    }
+
+    #[test]
+    fn el_punto_continuo_cae_dentro_del_pixel_que_dice_el_indice() {
+        // Las dos funciones tienen que estar de acuerdo, y es justo donde se
+        // mete la pata: el espejo de un ÍNDICE es `ancho−1−x` y el de una
+        // COORDENADA es `ancho−x`.
+        let (ancho, alto) = (7i64, 5i64);
+        for v in TODAS {
+            let o = Orientacion::desde_exif(v as u16);
+            let pasos = o.pasos_publicos();
+            let vista = o.dimensiones_resultantes(Dimensiones::nueva(7, 5).unwrap());
+            for y in 0..vista.alto as i64 {
+                for x in 0..vista.ancho as i64 {
+                    let (ix, iy) = indice_en_origen(pasos, ancho, alto, x, y);
+                    let (px, py) =
+                        punto_en_origen(pasos, ancho, alto, x as f32 + 0.5, y as f32 + 0.5);
+                    assert_eq!(
+                        (px.floor() as i64, py.floor() as i64),
+                        (ix, iy),
+                        "orientación {v}, píxel ({x}, {y}): el punto {px},{py} no cae en {ix},{iy}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn el_punto_va_y_vuelve_entre_la_vista_y_el_original() {
+        let original = Dimensiones::nueva(7, 5).unwrap();
+        for v in TODAS {
+            let o = Orientacion::desde_exif(v as u16);
+            let vista = o.dimensiones_resultantes(original);
+            for i in 0..=10 {
+                for j in 0..=10 {
+                    let x = vista.ancho as f32 * i as f32 / 10.0;
+                    let y = vista.alto as f32 * j as f32 / 10.0;
+                    let (ox, oy) = punto_en_origen(o.pasos_publicos(), 7, 5, x, y);
+                    let (vx, vy) = punto_en_vista(o, original, ox, oy);
+                    assert!(
+                        (vx - x).abs() < 1e-4 && (vy - y).abs() < 1e-4,
+                        "orientación {v}: ({x}, {y}) -> ({ox}, {oy}) -> ({vx}, {vy})"
+                    );
+                }
+            }
+        }
+    }
     #[test]
     fn un_numero_de_orientacion_imposible_se_trata_como_derecha() {
         for v in [0u16, 9, 255, 65535] {

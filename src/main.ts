@@ -423,7 +423,7 @@ class Aplicacion {
   private async ajustar(op: Operacion, definitivo: boolean): Promise<void> {
     if (!this.ficha) return;
     try {
-      this.ficha = await api.ajustar(op);
+      this.ficha = await api.ajustar(op, definitivo);
       this.herramientas.sincronizar(this.ficha);
       this.lienzo.refrescar();
       if (definitivo) this.sincronizar();

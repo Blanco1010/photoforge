@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use pf_core::{Dimensiones, Region};
-use pf_document::{Documento, Giro, Operacion, Revelado};
+use pf_document::{Documento, Giro, Operacion, Punto, Revelado};
 
 /// El tamaño de vista contra el que se mide: una ventana de 1.600 × 900 en una
 /// pantalla sin escalado. Es el caso normal, no el mejor ni el peor.
@@ -40,6 +40,12 @@ fn main() {
     let valor = |nombre: &str| -> Option<f32> {
         args.iter().find_map(|a| a.strip_prefix(nombre).and_then(|v| v.parse().ok()))
     };
+    // --degradado=desde,hasta,ev : una franja horizontal, en fracción del
+    // alto, para poder medir lo que cuesta.
+    let degradado: Option<(f32, f32, f32)> = args.iter().find_map(|a| {
+        let v: Vec<f32> = a.strip_prefix("--degradado=")?.split(',').filter_map(|x| x.parse().ok()).collect();
+        if v.len() == 3 { Some((v[0], v[1], v[2])) } else { None }
+    });
     let ev = valor("--ev=");
     let contraste = valor("--contraste=");
     // Los cuatro tonales, para poder medir el caso peor: todo movido.
@@ -56,7 +62,7 @@ fn main() {
 
     for ruta in rutas {
         println!("\n═══ {}", ruta.display());
-        if let Err(e) = revelar(&ruta, exportar, girar, ev, contraste, [luces, sombras, blancos, negros]) {
+        if let Err(e) = revelar(&ruta, exportar, girar, degradado, ev, contraste, [luces, sombras, blancos, negros]) {
             eprintln!("  ERROR: {e}");
         }
     }
@@ -66,6 +72,7 @@ fn revelar(
     ruta: &Path,
     exportar: bool,
     girar: Option<Giro>,
+    degradado: Option<(f32, f32, f32)>,
     ev: Option<f32>,
     contraste: Option<f32>,
     tonales: [Option<f32>; 4],
@@ -76,6 +83,15 @@ fn revelar(
 
     if let Some(g) = girar {
         doc.girar(g);
+    }
+    if let Some((desde, hasta, ev)) = degradado {
+        let d = doc.dim();
+        doc.poner_degradado(
+            Punto { x: d.ancho as f32 * 0.5, y: d.alto as f32 * desde },
+            Punto { x: d.ancho as f32 * 0.5, y: d.alto as f32 * hasta },
+            true,
+        );
+        doc.ajustar_degradado(ev, true);
     }
     let dim = doc.dim();
     println!(
@@ -110,22 +126,22 @@ fn revelar(
     let ms_vista = reloj.elapsed().as_millis();
 
     if let Some(ev) = ev {
-        doc.ajustar(Operacion::Exposicion { pasos: ev });
+        doc.ajustar(Operacion::Exposicion { pasos: ev }, true);
     }
     if let Some(c) = contraste {
-        doc.ajustar(Operacion::Contraste { cantidad: c });
+        doc.ajustar(Operacion::Contraste { cantidad: c }, true);
     }
     if let Some(c) = tonales[0] {
-        doc.ajustar(Operacion::Luces { cantidad: c });
+        doc.ajustar(Operacion::Luces { cantidad: c }, true);
     }
     if let Some(c) = tonales[1] {
-        doc.ajustar(Operacion::Sombras { cantidad: c });
+        doc.ajustar(Operacion::Sombras { cantidad: c }, true);
     }
     if let Some(c) = tonales[2] {
-        doc.ajustar(Operacion::Blancos { cantidad: c });
+        doc.ajustar(Operacion::Blancos { cantidad: c }, true);
     }
     if let Some(c) = tonales[3] {
-        doc.ajustar(Operacion::Negros { cantidad: c });
+        doc.ajustar(Operacion::Negros { cantidad: c }, true);
     }
     println!("  procedencia: {:?} · ajustes: {:?}", doc.procedencia(), doc.operaciones());
 

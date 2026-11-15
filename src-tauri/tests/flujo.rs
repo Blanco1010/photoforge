@@ -60,7 +60,7 @@ fn el_flujo_de_una_sesion_entera_funciona() {
 
     // 2. El usuario mueve la exposición.
     estado
-        .con_mut(|d| d.ajustar(Operacion::Exposicion { pasos: 1.0 }))
+        .con_mut(|d| d.ajustar(Operacion::Exposicion { pasos: 1.0 }, true))
         .unwrap();
     let revelado = estado
         .con(|d| d.vista(region, destino, Revelado::Actual).a_rgba8())
@@ -83,7 +83,7 @@ fn el_flujo_de_una_sesion_entera_funciona() {
     // 5. Y el archivo de origen sigue byte a byte como estaba.
     let antes = std::fs::read(&ruta).unwrap();
     estado
-        .con_mut(|d| d.ajustar(Operacion::Contraste { cantidad: 60.0 }))
+        .con_mut(|d| d.ajustar(Operacion::Contraste { cantidad: 60.0 }, true))
         .unwrap();
     let _ = estado.con(|d| d.completa(Revelado::Actual)).unwrap();
     assert_eq!(std::fs::read(&ruta).unwrap(), antes, "el archivo original se ha tocado");
@@ -96,12 +96,61 @@ fn el_flujo_de_una_sesion_entera_funciona() {
 }
 
 #[test]
+fn el_degradado_recorre_su_ciclo_entero_contra_el_estado_real() {
+    use pf_document::Punto;
+
+    let ruta = foto("degradado_flujo.png");
+    let estado = Estado::default();
+    estado.poner(Documento::abrir(&ruta).unwrap());
+
+    let destino = Dimensiones::nueva(64, 48).unwrap();
+    let region = Region { x: 0.0, y: 0.0, ancho: 64.0, alto: 48.0 };
+    let limpio = estado
+        .con(|d| d.vista(region, destino, Revelado::Actual).a_rgba8())
+        .unwrap();
+
+    // Poner: la mitad de arriba se oscurece.
+    let desde = Punto { x: 32.0, y: 0.0 };
+    let hasta = Punto { x: 32.0, y: 48.0 };
+    estado.con_mut(|d| d.poner_degradado(desde, hasta, true)).unwrap();
+    let con = estado
+        .con(|d| d.vista(region, destino, Revelado::Actual).a_rgba8())
+        .unwrap();
+    assert_ne!(con, limpio, "el degradado tenía que cambiar la vista");
+
+    // Los puntos que salen por la ficha son los mismos que entraron.
+    let v = estado.con(|d| d.degradado_en_la_vista()).unwrap().unwrap();
+    assert!((v.desde.y - desde.y).abs() < 1e-3 && (v.hasta.y - hasta.y).abs() < 1e-3);
+
+    // Ajustar la luz.
+    estado.con_mut(|d| d.ajustar_degradado(-3.0, true)).unwrap();
+    let mas = estado
+        .con(|d| d.vista(region, destino, Revelado::Actual).a_rgba8())
+        .unwrap();
+    assert_ne!(mas, con);
+
+    // Deshacer devuelve el ajuste de la luz, no la franja.
+    estado.con_mut(|d| d.deshacer()).unwrap();
+    assert!(estado.con(|d| d.tiene_degradado()).unwrap());
+
+    // Y quitarlo deja la vista como estaba.
+    estado.con_mut(|d| d.quitar_degradado()).unwrap();
+    assert!(!estado.con(|d| d.tiene_degradado()).unwrap());
+    assert_eq!(
+        estado.con(|d| d.vista(region, destino, Revelado::Actual).a_rgba8()).unwrap(),
+        limpio
+    );
+
+    std::fs::remove_file(&ruta).ok();
+}
+
+#[test]
 fn exportar_escribe_un_archivo_que_se_puede_volver_a_abrir() {
     let ruta = foto("exportable.png");
     let estado = Estado::default();
     estado.poner(Documento::abrir(&ruta).unwrap());
     estado
-        .con_mut(|d| d.ajustar(Operacion::Exposicion { pasos: -0.5 }))
+        .con_mut(|d| d.ajustar(Operacion::Exposicion { pasos: -0.5 }, true))
         .unwrap();
 
     let salida = ruta.with_file_name("exportable-revelado.tif");

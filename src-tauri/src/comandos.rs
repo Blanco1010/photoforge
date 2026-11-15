@@ -16,7 +16,7 @@
 use std::path::PathBuf;
 
 use pf_core::{Dimensiones, Error, Procedencia, Region, Resultado};
-use pf_document::{Documento, Giro, Operacion, Revelado};
+use pf_document::{Degradado, Documento, Giro, Operacion, Punto, Revelado};
 use pf_image::histograma::Histograma;
 use pf_image::metadatos::Metadatos;
 
@@ -44,6 +44,10 @@ pub struct Ficha {
     pub puede_deshacer: bool,
     pub puede_rehacer: bool,
     pub hay_cambios: bool,
+    /// El degradado en coordenadas de la foto COMO SE VE, que es lo que el
+    /// lienzo necesita para dibujar su adorno. La conversión la hace Rust,
+    /// que es el único que tiene el álgebra de las ocho orientaciones.
+    pub degradado: Option<Degradado>,
     /// Cómo está girada la foto, en castellano, o `null` si está como venía.
     ///
     /// Es una sola cosa con tres consumidores: enciende la entrada «Como
@@ -79,6 +83,7 @@ fn ficha_de(d: &Documento) -> Ficha {
         puede_deshacer: d.puede_deshacer(),
         puede_rehacer: d.puede_rehacer(),
         hay_cambios: d.hay_cambios(),
+        degradado: d.degradado_en_la_vista(),
         giro: d.giro_descrito(),
     }
 }
@@ -152,10 +157,54 @@ pub fn renderizar(
     Ok(tauri::ipc::Response::new(bytes))
 }
 
+/// Pone o cambia una operación.
+///
+/// `definitivo` distingue arrastrar de soltar, y no es solo para el
+/// histograma: mientras se arrastra el documento cambia pero el historial no,
+/// así que un arrastre entero es UN paso que deshacer y no sesenta.
 #[tauri::command]
-pub fn ajustar(estado: tauri::State<'_, Estado>, operacion: Operacion) -> Resultado<Ficha> {
+pub fn ajustar(
+    estado: tauri::State<'_, Estado>,
+    operacion: Operacion,
+    definitivo: bool,
+) -> Resultado<Ficha> {
     estado.con_mut(|d| {
-        d.ajustar(operacion);
+        d.ajustar(operacion, definitivo);
+        ficha_de(d)
+    })
+}
+
+/// Pone el degradado o mueve el que haya. Los puntos van en coordenadas de
+/// la foto como se ve.
+#[tauri::command]
+pub fn poner_degradado(
+    estado: tauri::State<'_, Estado>,
+    desde: Punto,
+    hasta: Punto,
+    definitivo: bool,
+) -> Resultado<Ficha> {
+    estado.con_mut(|d| {
+        d.poner_degradado(desde, hasta, definitivo);
+        ficha_de(d)
+    })
+}
+
+#[tauri::command]
+pub fn ajustar_degradado(
+    estado: tauri::State<'_, Estado>,
+    pasos: f32,
+    definitivo: bool,
+) -> Resultado<Ficha> {
+    estado.con_mut(|d| {
+        d.ajustar_degradado(pasos, definitivo);
+        ficha_de(d)
+    })
+}
+
+#[tauri::command]
+pub fn quitar_degradado(estado: tauri::State<'_, Estado>) -> Resultado<Ficha> {
+    estado.con_mut(|d| {
+        d.quitar_degradado();
         ficha_de(d)
     })
 }

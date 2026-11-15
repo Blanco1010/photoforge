@@ -278,14 +278,25 @@ pub fn blancos(p: f32, t: f32) -> f32 {
 ///
 /// Lo que cada operación hace y por qué está en el comentario de su variante,
 /// aquí arriba; lo que hace falta para componerlas, en `plan.rs`.
-pub fn aplicar(operaciones: &[Operacion], img: &mut Imagen) {
-    crate::plan::Plan::desde(operaciones).ejecutar(img);
+pub fn aplicar(
+    operaciones: &[Operacion],
+    degradado: Option<crate::Degradado>,
+    encuadre: crate::Encuadre,
+    img: &mut Imagen,
+) {
+    crate::plan::Plan::desde(operaciones, degradado, encuadre).ejecutar(img);
 }
 
 #[cfg(test)]
 mod pruebas {
     use super::*;
     use pf_image::color;
+
+    /// Las pruebas de este archivo no miran al degradado: el suyo está en
+    /// `plan.rs`, que es donde vive su geometría.
+    fn aplicar_sin_degradado(ops: &[Operacion], img: &mut Imagen) {
+        aplicar(ops, None, crate::Encuadre::completa(img.dim()), img);
+    }
     use pf_core::Dimensiones;
     use pf_image::CANALES;
 
@@ -302,7 +313,7 @@ mod pruebas {
     #[test]
     fn un_paso_de_exposicion_es_exactamente_el_doble_de_luz() {
         let mut img = imagen(&[0.1, 0.25, 0.5]);
-        aplicar(&[Operacion::Exposicion { pasos: 1.0 }], &mut img);
+        aplicar_sin_degradado(&[Operacion::Exposicion { pasos: 1.0 }], &mut img);
         let v = canal_rojo(&img);
         assert!((v[0] - 0.2).abs() < 1e-6);
         assert!((v[1] - 0.5).abs() < 1e-6);
@@ -314,8 +325,8 @@ mod pruebas {
         // La prueba de que no se está recortando por el camino: si el 1,6 de
         // en medio se hubiera pegado a 1,0, al volver saldría 0,5 y no 0,8.
         let mut img = imagen(&[0.8]);
-        aplicar(&[Operacion::Exposicion { pasos: 1.0 }], &mut img);
-        aplicar(&[Operacion::Exposicion { pasos: -1.0 }], &mut img);
+        aplicar_sin_degradado(&[Operacion::Exposicion { pasos: 1.0 }], &mut img);
+        aplicar_sin_degradado(&[Operacion::Exposicion { pasos: -1.0 }], &mut img);
         assert!((canal_rojo(&img)[0] - 0.8).abs() < 1e-6);
     }
 
@@ -326,7 +337,7 @@ mod pruebas {
         let pivote = color::srgb_a_lineal(0.5);
         for cantidad in [-100.0, -40.0, 40.0, 100.0] {
             let mut img = imagen(&[pivote]);
-            aplicar(&[Operacion::Contraste { cantidad }], &mut img);
+            aplicar_sin_degradado(&[Operacion::Contraste { cantidad }], &mut img);
             let v = canal_rojo(&img)[0];
             assert!((v - pivote).abs() < 1e-5, "con {cantidad} el pivote se movió a {v}");
         }
@@ -337,7 +348,7 @@ mod pruebas {
         let oscuro = color::srgb_a_lineal(0.25);
         let claro = color::srgb_a_lineal(0.75);
         let mut img = imagen(&[oscuro, claro]);
-        aplicar(&[Operacion::Contraste { cantidad: 50.0 }], &mut img);
+        aplicar_sin_degradado(&[Operacion::Contraste { cantidad: 50.0 }], &mut img);
         let v = canal_rojo(&img);
         assert!(v[0] < oscuro, "lo oscuro tenía que oscurecerse");
         assert!(v[1] > claro, "lo claro tenía que aclararse");
@@ -347,7 +358,7 @@ mod pruebas {
     fn el_contraste_a_menos_cien_lo_deja_todo_en_el_pivote() {
         let pivote = color::srgb_a_lineal(0.5);
         let mut img = imagen(&[0.01, 0.3, 0.9]);
-        aplicar(&[Operacion::Contraste { cantidad: -100.0 }], &mut img);
+        aplicar_sin_degradado(&[Operacion::Contraste { cantidad: -100.0 }], &mut img);
         for v in canal_rojo(&img) {
             assert!((v - pivote).abs() < 1e-5, "quedó {v} y no el pivote {pivote}");
         }
@@ -356,7 +367,7 @@ mod pruebas {
     #[test]
     fn la_curva_de_tono_salva_las_luces_sin_tocar_los_medios() {
         let mut img = imagen(&[0.18, 0.5, 1.4, 4.0]);
-        aplicar(&[Operacion::CurvaDeTono { activa: true }], &mut img);
+        aplicar_sin_degradado(&[Operacion::CurvaDeTono { activa: true }], &mut img);
         let v = canal_rojo(&img);
         assert_eq!(v[0], 0.18, "el gris medio no se puede mover");
         assert_eq!(v[1], 0.5, "medio punto tampoco");
@@ -382,7 +393,7 @@ mod pruebas {
         assert!(!Operacion::CurvaDeTono { activa: true }.es_neutra());
         let partida = imagen(&[0.1, 3.0]);
         let mut img = partida.clone();
-        aplicar(&[Operacion::CurvaDeTono { activa: false }], &mut img);
+        aplicar_sin_degradado(&[Operacion::CurvaDeTono { activa: false }], &mut img);
         assert_eq!(img.datos(), partida.datos());
     }
 
@@ -493,7 +504,7 @@ mod pruebas {
     fn una_operacion_neutra_no_toca_ni_un_valor() {
         let partida = imagen(&[0.1, 0.5, 0.9]);
         let mut img = partida.clone();
-        aplicar(
+        aplicar_sin_degradado(
             &[Operacion::Exposicion { pasos: 0.0 }, Operacion::Contraste { cantidad: 0.0 }],
             &mut img,
         );

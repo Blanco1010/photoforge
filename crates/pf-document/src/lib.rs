@@ -30,6 +30,53 @@ use pf_image::orientacion::{self, Orientacion};
 use pf_image::{Imagen, histograma::Histograma, metadatos::Metadatos};
 
 pub use operacion::{Clase, Operacion};
+pub use plan::Encuadre;
+
+/// Un punto de la foto, en píxeles y con decimales.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Punto {
+    pub x: f32,
+    pub y: f32,
+}
+
+/// El degradado lineal: una franja que quita o pone luz.
+///
+/// # Qué es y qué no es
+///
+/// Es el cristal degradado que se pone delante del objetivo: una exposición
+/// que varía en el espacio. No es un segundo revelado encima del primero, y
+/// esa diferencia se nota — al ir DENTRO del paso de exposición, antes de la
+/// curva de luces, oscurecer un cielo quemado puede devolverle detalle, y la
+/// curva y el contraste no se aplican dos veces en la franja.
+///
+/// # Por qué los puntos van en coordenadas del ORIGINAL
+///
+/// Porque así el degradado queda pegado al CONTENIDO: giras la foto y el
+/// cielo se lleva su oscurecimiento con él, por construcción y no por
+/// acordarse. Y porque los tres caminos de revelado —la vista, la vista sin
+/// girar del histograma y la foto entera de la exportación— quedan en el
+/// mismo mapeo sin una sola rama.
+///
+/// # Por qué dos puntos y no un porcentaje del alto
+///
+/// Dos números no pueden expresar una franja inclinada, y un horizonte con
+/// dos grados de caída es el caso normal, no el raro.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Degradado {
+    /// Donde el efecto está entero.
+    pub desde: Punto,
+    /// Donde el efecto se ha acabado.
+    pub hasta: Punto,
+    /// El único ajuste: pasos de exposición dentro de la franja.
+    pub pasos: f32,
+}
+
+/// Lo que deja puesto el arrastre.
+///
+/// Que no sea cero es lo que hace que el gesto no sea un control que no hace
+/// nada: se ve el efecto nacer bajo el ratón. Y que sea modesto —y no −2— es
+/// para que se explique solo y se suba, en vez de asustar.
+pub const PASOS_DE_PARTIDA: f32 = -0.75;
 
 /// Todo lo que el usuario puede cambiar de un documento, junto.
 ///
@@ -47,6 +94,21 @@ pub use operacion::{Clase, Operacion};
 pub struct Instantanea {
     pub operaciones: Vec<Operacion>,
     pub giro: Orientacion,
+    /// # Por qué el degradado es un campo de aquí y no una `Operacion` más
+    ///
+    /// Porque su geometría tiene que sobrevivir a que su importe valga cero.
+    /// `Operacion::es_neutra` dice que un importe de cero es neutro y
+    /// `ajustar` lo quita de la lista; con el degradado dentro, arrastrar la
+    /// herramienta y dejar el deslizador en 0 EV borraría del documento la
+    /// franja que acabas de dibujar, y el adorno del lienzo no tendría de
+    /// dónde sacar su geometría en el cuadro siguiente.
+    ///
+    /// A cambio, `clase()`, `es_neutra()` y `orden()` no cambian ni una
+    /// línea, y el historial entrelazado con el giro sale gratis. Es
+    /// exactamente lo que dejó dicho el comentario de esta estructura: «el
+    /// día que entre otra propiedad, meterla aquí es la única forma de que
+    /// compile».
+    pub degradado: Option<Degradado>,
 }
 
 /// Los cinco gestos de giro que ofrece el menú, más la vuelta atrás.
@@ -116,6 +178,14 @@ pub struct Documento {
     iniciales: Instantanea,
     deshacer: Vec<Instantanea>,
     rehacer: Vec<Instantanea>,
+    /// El estado de antes de empezar el gesto que está en marcha.
+    ///
+    /// Sin esto, arrastrar un deslizador dejaba SESENTA pasos en el
+    /// historial —uno por cada posición intermedia— y deshacer te los hacía
+    /// desandar de uno en uno. Un gesto es un paso: el primer cambio
+    /// provisional apunta aquí dónde estábamos, y el definitivo es el que
+    /// lo mete en la pila.
+    pendiente: Option<Instantanea>,
 }
 
 impl Documento {
@@ -151,7 +221,11 @@ impl Documento {
         // depender de aplicarlo en cada camino, que es el fallo que ya se
         // pagó una vez. Y tiene premio: enderezar la vista cuesta
         // exactamente cero hasta que el usuario gira la foto.
-        let iniciales = Instantanea { operaciones: iniciales, giro: Orientacion::DERECHA };
+        let iniciales = Instantanea {
+            operaciones: iniciales,
+            giro: Orientacion::DERECHA,
+            degradado: None,
+        };
         Ok(Self {
             ruta: ruta.to_path_buf(),
             original: cargada.imagen,
@@ -163,6 +237,7 @@ impl Documento {
             iniciales,
             deshacer: Vec::new(),
             rehacer: Vec::new(),
+            pendiente: None,
         })
     }
 
@@ -231,6 +306,10 @@ impl Documento {
         self.estado.giro != self.iniciales.giro
     }
 
+    pub fn tiene_degradado(&self) -> bool {
+        self.estado.degradado.is_some()
+    }
+
     /// Los ajustes con los que se abrió, que es a donde vuelve «Restablecer».
     pub fn iniciales(&self) -> &[Operacion] {
         &self.iniciales.operaciones
@@ -254,22 +333,96 @@ impl Documento {
     ///
     /// Devuelve `false` si no cambió nada, para que quien llame pueda
     /// ahorrarse el repintado.
-    pub fn ajustar(&mut self, op: Operacion) -> bool {
-        let anterior = self.estado.clone();
+    /// Pone o cambia una operación.
+    ///
+    /// `definitivo` distingue «estoy arrastrando» de «he soltado». Mientras
+    /// se arrastra el documento cambia pero el historial no, así que un
+    /// gesto entero es UN paso que deshacer y no sesenta.
+    pub fn ajustar(&mut self, op: Operacion, definitivo: bool) -> bool {
+        self.cambiar(definitivo, |e| {
+            e.operaciones.retain(|o| o.clase() != op.clase());
+            if !op.es_neutra() {
+                e.operaciones.push(op);
+                // El orden de aplicación es el canónico y no el de uso. El
+                // porqué está en `Operacion::orden`.
+                e.operaciones.sort_by_key(|o| o.orden());
+            }
+        })
+    }
 
-        self.estado.operaciones.retain(|o| o.clase() != op.clase());
-        if !op.es_neutra() {
-            self.estado.operaciones.push(op);
-            // El orden de aplicación es el canónico y no el de uso. El porqué
-            // está en `Operacion::orden`.
-            self.estado.operaciones.sort_by_key(|o| o.orden());
-        }
+    /// Pone el degradado, o mueve el que haya. Nunca crea un segundo.
+    ///
+    /// Los dos puntos ENTRAN en coordenadas de la foto como se ve —que es lo
+    /// que la interfaz sabe calcular— y se guardan en coordenadas del
+    /// original. Esta es la única puerta que convierte en ese sentido, y
+    /// `degradado_en_la_vista` es la de vuelta.
+    pub fn poner_degradado(&mut self, desde: Punto, hasta: Punto, definitivo: bool) -> bool {
+        let pasos = self.estado.giro.pasos_publicos();
+        let (ancho, alto) = (self.original.ancho() as i64, self.original.alto() as i64);
+        let convertir = |p: Punto| {
+            let (x, y) = orientacion::punto_en_origen(pasos, ancho, alto, p.x, p.y);
+            Punto { x, y }
+        };
+        let desde = convertir(desde);
+        let hasta = convertir(hasta);
+        let luz = self.estado.degradado.map(|d| d.pasos).unwrap_or(PASOS_DE_PARTIDA);
+        self.cambiar(definitivo, |e| {
+            e.degradado = Some(Degradado { desde, hasta, pasos: luz });
+        })
+    }
 
-        if self.estado == anterior {
+    /// Cambia cuánta luz quita o pone el degradado. No hace nada sin uno.
+    pub fn ajustar_degradado(&mut self, pasos: f32, definitivo: bool) -> bool {
+        if self.estado.degradado.is_none() {
             return false;
         }
-        self.apuntar(anterior);
-        true
+        self.cambiar(definitivo, |e| {
+            if let Some(d) = e.degradado.as_mut() {
+                d.pasos = pasos.clamp(-6.0, 6.0);
+            }
+        })
+    }
+
+    pub fn quitar_degradado(&mut self) -> bool {
+        if self.estado.degradado.is_none() {
+            return false;
+        }
+        self.cambiar(true, |e| e.degradado = None)
+    }
+
+    /// El degradado en coordenadas de la foto COMO SE VE, que es lo que
+    /// necesita el lienzo para dibujar su adorno.
+    pub fn degradado_en_la_vista(&self) -> Option<Degradado> {
+        let d = self.estado.degradado?;
+        let giro = self.estado.giro;
+        let original = self.original.dim();
+        let convertir = |p: Punto| {
+            let (x, y) = orientacion::punto_en_vista(giro, original, p.x, p.y);
+            Punto { x, y }
+        };
+        Some(Degradado { desde: convertir(d.desde), hasta: convertir(d.hasta), pasos: d.pasos })
+    }
+
+    /// El cambio, con su contabilidad de historial en un solo sitio.
+    fn cambiar(&mut self, definitivo: bool, f: impl FnOnce(&mut Instantanea)) -> bool {
+        let anterior = self.estado.clone();
+        f(&mut self.estado);
+        let cambio = self.estado != anterior;
+        if cambio && self.pendiente.is_none() {
+            self.pendiente = Some(anterior);
+        }
+        // El cierre del gesto ocurre aunque ESTA llamada no haya cambiado
+        // nada, y es imprescindible: al soltar un deslizador, el navegador
+        // manda un `change` con el mismo valor que el último `input`. Si el
+        // cierre dependiera de que hubiera cambio, el arrastre entero se
+        // quedaría sin su paso en el historial y Ctrl+Z no lo desharía.
+        if definitivo
+            && let Some(p) = self.pendiente.take()
+            && p != self.estado
+        {
+            self.apuntar(p);
+        }
+        cambio
     }
 
     /// Gira o voltea la foto.
@@ -301,10 +454,7 @@ impl Documento {
         if nuevo == self.estado.giro {
             return false;
         }
-        let anterior = self.estado.clone();
-        self.estado.giro = nuevo;
-        self.apuntar(anterior);
-        true
+        self.cambiar(true, |e| e.giro = nuevo)
     }
 
     /// Devuelve la foto a como se abrió.
@@ -321,13 +471,15 @@ impl Documento {
         if self.estado.operaciones == self.iniciales.operaciones {
             return false;
         }
-        let anterior = self.estado.clone();
-        self.estado.operaciones = self.iniciales.operaciones.clone();
-        self.apuntar(anterior);
-        true
+        let iniciales = self.iniciales.operaciones.clone();
+        self.cambiar(true, |e| e.operaciones = iniciales)
     }
 
     pub fn deshacer(&mut self) -> bool {
+        // Un gesto a medias se da por terminado: deshacer en mitad de un
+        // arrastre es raro, pero dejar el apunte colgado haría que el
+        // siguiente definitivo guardara un estado de hace dos acciones.
+        self.pendiente = None;
         match self.deshacer.pop() {
             Some(estado) => {
                 self.rehacer.push(std::mem::replace(&mut self.estado, estado));
@@ -338,6 +490,7 @@ impl Documento {
     }
 
     pub fn rehacer(&mut self) -> bool {
+        self.pendiente = None;
         match self.rehacer.pop() {
             Some(estado) => {
                 self.deshacer.push(std::mem::replace(&mut self.estado, estado));
@@ -384,8 +537,22 @@ impl Documento {
             destino,
             self.estado.giro,
         );
-        operacion::aplicar(self.lista(que), &mut img);
+        let encuadre =
+            Encuadre::nuevo(region, destino, self.estado.giro, self.original.dim());
+        operacion::aplicar(self.lista(que), self.degradado(que), encuadre, &mut img);
         img
+    }
+
+    /// El degradado que corresponde a esta versión del revelado.
+    ///
+    /// «Antes» tiene que enseñar la foto sin degradado, igual que enseña la
+    /// foto sin los ajustes: es parte del revelado, aunque no viva en la
+    /// lista.
+    fn degradado(&self, que: Revelado) -> Option<Degradado> {
+        match que {
+            Revelado::Actual => self.estado.degradado,
+            Revelado::ComoSeAbrio => self.iniciales.degradado,
+        }
     }
 
     /// La misma vista, pero en coordenadas del original y sin girar.
@@ -396,7 +563,9 @@ impl Documento {
     /// mientras se arrastra un deslizador. Nadie atribuiría eso al giro.
     fn vista_sin_girar(&self, region: Region, destino: Dimensiones, que: Revelado) -> Imagen {
         let mut img = pf_image::muestreo::muestrear(&self.original, region, destino);
-        operacion::aplicar(self.lista(que), &mut img);
+        let encuadre =
+            Encuadre::nuevo(region, destino, Orientacion::DERECHA, self.original.dim());
+        operacion::aplicar(self.lista(que), self.degradado(que), encuadre, &mut img);
         img
     }
 
@@ -423,7 +592,8 @@ impl Documento {
     /// La foto entera revelada y SIN girar.
     fn revelada(&self, que: Revelado) -> Imagen {
         let mut img = self.original.clone();
-        operacion::aplicar(self.lista(que), &mut img);
+        let encuadre = Encuadre::completa(self.original.dim());
+        operacion::aplicar(self.lista(que), self.degradado(que), encuadre, &mut img);
         img
     }
 
@@ -501,15 +671,15 @@ mod pruebas {
         let mut d = doc("intacto.png");
         let copia: Vec<f32> = d.original().datos().to_vec();
 
-        d.ajustar(Operacion::Exposicion { pasos: 2.0 });
-        d.ajustar(Operacion::Contraste { cantidad: 80.0 });
+        d.ajustar(Operacion::Exposicion { pasos: 2.0 }, true);
+        d.ajustar(Operacion::Contraste { cantidad: 80.0 }, true);
         let _ = d.completa(Revelado::Actual);
         let _ = d.vista(
             Region { x: 0.0, y: 0.0, ancho: 16.0, alto: 16.0 },
             Dimensiones::nueva(8, 8).unwrap(),
             Revelado::Actual,
         );
-        d.ajustar(Operacion::Exposicion { pasos: -3.0 });
+        d.ajustar(Operacion::Exposicion { pasos: -3.0 }, true);
 
         assert_eq!(d.original().datos(), copia.as_slice());
     }
@@ -518,7 +688,7 @@ mod pruebas {
     fn mover_el_mismo_deslizador_no_encadena_operaciones() {
         let mut d = doc("una_sola.png");
         for i in 1..=30 {
-            d.ajustar(Operacion::Exposicion { pasos: i as f32 / 10.0 });
+            d.ajustar(Operacion::Exposicion { pasos: i as f32 / 10.0 }, true);
         }
         assert_eq!(d.operaciones().len(), 1);
         assert_eq!(d.operaciones()[0], Operacion::Exposicion { pasos: 3.0 });
@@ -527,8 +697,8 @@ mod pruebas {
     #[test]
     fn devolver_el_deslizador_a_cero_deja_el_documento_como_estaba() {
         let mut d = doc("vuelta_a_cero.png");
-        d.ajustar(Operacion::Exposicion { pasos: 1.5 });
-        d.ajustar(Operacion::Exposicion { pasos: 0.0 });
+        d.ajustar(Operacion::Exposicion { pasos: 1.5 }, true);
+        d.ajustar(Operacion::Exposicion { pasos: 0.0 }, true);
         assert!(d.operaciones().is_empty());
         assert!(!d.hay_cambios());
     }
@@ -537,12 +707,12 @@ mod pruebas {
     fn el_resultado_no_depende_de_que_deslizador_se_toco_primero() {
         // El motivo de que exista `Operacion::orden`.
         let mut a = doc("orden_a.png");
-        a.ajustar(Operacion::Exposicion { pasos: 1.0 });
-        a.ajustar(Operacion::Contraste { cantidad: 40.0 });
+        a.ajustar(Operacion::Exposicion { pasos: 1.0 }, true);
+        a.ajustar(Operacion::Contraste { cantidad: 40.0 }, true);
 
         let mut b = doc("orden_b.png");
-        b.ajustar(Operacion::Contraste { cantidad: 40.0 });
-        b.ajustar(Operacion::Exposicion { pasos: 1.0 });
+        b.ajustar(Operacion::Contraste { cantidad: 40.0 }, true);
+        b.ajustar(Operacion::Exposicion { pasos: 1.0 }, true);
 
         assert_eq!(a.completa(Revelado::Actual).datos(), b.completa(Revelado::Actual).datos());
     }
@@ -550,8 +720,8 @@ mod pruebas {
     #[test]
     fn deshacer_y_rehacer_recorren_el_historial_en_los_dos_sentidos() {
         let mut d = doc("historial.png");
-        d.ajustar(Operacion::Exposicion { pasos: 1.0 });
-        d.ajustar(Operacion::Contraste { cantidad: 20.0 });
+        d.ajustar(Operacion::Exposicion { pasos: 1.0 }, true);
+        d.ajustar(Operacion::Contraste { cantidad: 20.0 }, true);
         assert_eq!(d.operaciones().len(), 2);
 
         assert!(d.deshacer());
@@ -570,12 +740,12 @@ mod pruebas {
     #[test]
     fn hacer_algo_nuevo_despues_de_deshacer_borra_el_futuro() {
         let mut d = doc("futuro.png");
-        d.ajustar(Operacion::Exposicion { pasos: 1.0 });
-        d.ajustar(Operacion::Contraste { cantidad: 20.0 });
+        d.ajustar(Operacion::Exposicion { pasos: 1.0 }, true);
+        d.ajustar(Operacion::Contraste { cantidad: 20.0 }, true);
         d.deshacer();
         assert!(d.puede_rehacer());
 
-        d.ajustar(Operacion::Contraste { cantidad: -50.0 });
+        d.ajustar(Operacion::Contraste { cantidad: -50.0 }, true);
         assert!(!d.puede_rehacer(), "el futuro que no ocurrió no debería quedar disponible");
     }
 
@@ -586,7 +756,7 @@ mod pruebas {
         let destino = Dimensiones::nueva(5, 5).unwrap();
 
         let antes = d.vista(region, destino, Revelado::ComoSeAbrio);
-        d.ajustar(Operacion::Exposicion { pasos: 0.0 }); // neutra: no cambia nada
+        d.ajustar(Operacion::Exposicion { pasos: 0.0 }, true); // neutra: no cambia nada
         let despues = d.vista(region, destino, Revelado::Actual);
 
         assert_eq!(antes.datos(), despues.datos());
@@ -599,7 +769,7 @@ mod pruebas {
         // sino dónde cae el centro de masas. Si el reducido estuviera
         // calculado sobre otra cosa, el centro se iría.
         let mut d = doc("histogramas.png");
-        d.ajustar(Operacion::Exposicion { pasos: 0.5 });
+        d.ajustar(Operacion::Exposicion { pasos: 0.5 }, true);
 
         let centro = |h: &Histograma| -> f64 {
             let total: u64 = h.luminancia.iter().map(|x| *x as u64).sum();
@@ -648,9 +818,9 @@ mod pruebas {
         // dos pilas: con pilas separadas, estos tres pasos se desharían en un
         // orden que no es el que ocurrió.
         let mut d = doc("historial_mixto.png");
-        d.ajustar(Operacion::Exposicion { pasos: 1.0 });
+        d.ajustar(Operacion::Exposicion { pasos: 1.0 }, true);
         d.girar(Giro::Derecha);
-        d.ajustar(Operacion::Contraste { cantidad: 30.0 });
+        d.ajustar(Operacion::Contraste { cantidad: 30.0 }, true);
 
         assert!(d.deshacer()); // quita el contraste
         assert!(d.esta_girada());
@@ -675,7 +845,7 @@ mod pruebas {
         // «Restablecer el revelado» dice lo que hace. Para volver a como
         // venía el archivo está su propia entrada del menú Imagen.
         let mut d = doc("restablecer_girada.png");
-        d.ajustar(Operacion::Exposicion { pasos: 1.0 });
+        d.ajustar(Operacion::Exposicion { pasos: 1.0 }, true);
         d.girar(Giro::Derecha);
         assert!(d.restablecer());
         assert!(d.operaciones().is_empty());
@@ -702,7 +872,7 @@ mod pruebas {
         // ninguno. Esta prueba es lo que defiende que el histograma NO pague
         // el giro, el día que alguien «arregle» el camino.
         let mut d = doc("histograma_girada.png");
-        d.ajustar(Operacion::Exposicion { pasos: 0.7 });
+        d.ajustar(Operacion::Exposicion { pasos: 0.7 }, true);
         let antes = d.histograma();
         let rapido_antes = d.histograma_rapido(8);
         d.girar(Giro::Izquierda);
@@ -711,10 +881,153 @@ mod pruebas {
     }
 
     #[test]
+    fn el_degradado_quita_luz_donde_empieza_y_no_donde_acaba() {
+        // Una franja vertical de arriba abajo sobre una foto gris.
+        let mut d = doc("degradado_basico.png");
+        let dim = d.dim();
+        d.poner_degradado(
+            Punto { x: 0.0, y: 0.0 },
+            Punto { x: 0.0, y: dim.alto as f32 },
+            true,
+        );
+        d.ajustar_degradado(-2.0, true);
+
+        let img = d.completa(Revelado::Actual);
+        // Se mira la columna 8 y no la 0: la foto de prueba es un degradado
+        // y su esquina de arriba a la izquierda es negra, donde una razón
+        // entre antes y después no significa nada.
+        let fila = |y: u32| -> f32 {
+            let i = (y as usize * dim.ancho as usize + 8) * pf_image::CANALES;
+            img.datos()[i]
+        };
+        let limpio = d.completa(Revelado::ComoSeAbrio);
+        let fila_limpia = |y: u32| -> f32 {
+            let i = (y as usize * dim.ancho as usize + 8) * pf_image::CANALES;
+            limpio.datos()[i]
+        };
+
+        // Arriba, el efecto entero: dos pasos menos es la cuarta parte.
+        assert!((fila(0) / fila_limpia(0) - 0.25).abs() < 0.02, "arriba salió {}", fila(0));
+        // Abajo, nada.
+        let ultima = dim.alto - 1;
+        assert!(
+            (fila(ultima) / fila_limpia(ultima) - 1.0).abs() < 0.02,
+            "abajo salió {}",
+            fila(ultima)
+        );
+        // Y en medio, algo intermedio y monótono.
+        let medio = fila(dim.alto / 2) / fila_limpia(dim.alto / 2);
+        assert!(medio > 0.25 && medio < 1.0, "en medio salió {medio}");
+    }
+
+    #[test]
+    fn un_degradado_sin_luz_no_cambia_ni_un_bit() {
+        let mut d = doc("degradado_neutro.png");
+        let partida = d.completa(Revelado::Actual).datos().to_vec();
+        d.poner_degradado(Punto { x: 0.0, y: 0.0 }, Punto { x: 0.0, y: 10.0 }, true);
+        d.ajustar_degradado(0.0, true);
+        assert!(d.tiene_degradado(), "la franja tiene que seguir puesta aunque no haga nada");
+        assert_eq!(d.completa(Revelado::Actual).datos(), partida.as_slice());
+    }
+
+    #[test]
+    fn la_vista_entera_coincide_con_la_foto_revelada_en_las_ocho_orientaciones() {
+        // LA prueba del encuadre. Si la geometría que recibe la pasada
+        // estuviera mal —un eje cambiado, medio píxel de desfase, el giro sin
+        // aplicar—, los dos caminos se separarían. Cubre a la vez el caso de
+        // la exportación y el del lienzo.
+        for giro in [
+            Giro::Derecha,
+            Giro::Izquierda,
+            Giro::MediaVuelta,
+            Giro::EspejoHorizontal,
+            Giro::EspejoVertical,
+            Giro::Quitar,
+        ] {
+            let mut d = doc("degradado_girado.png");
+            d.ajustar(Operacion::Exposicion { pasos: 0.5 }, true);
+            d.poner_degradado(
+                Punto { x: 2.0, y: 1.0 },
+                Punto { x: 13.0, y: 11.0 },
+                true,
+            );
+            d.ajustar_degradado(-1.5, true);
+            d.girar(giro);
+
+            let dim = d.dim();
+            let region = Region {
+                x: 0.0,
+                y: 0.0,
+                ancho: dim.ancho as f32,
+                alto: dim.alto as f32,
+            };
+            let vista = d.vista(region, dim, Revelado::Actual);
+            let completa = d.completa(Revelado::Actual);
+            assert_eq!(vista.dim(), completa.dim(), "con {giro:?}");
+            for (i, (a, b)) in vista.datos().iter().zip(completa.datos()).enumerate() {
+                assert!(
+                    (a - b).abs() < 1e-5,
+                    "con {giro:?}, valor {i}: la vista da {a} y la foto entera {b}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn el_degradado_va_y_vuelve_entre_la_vista_y_el_original() {
+        for giro in [Giro::Derecha, Giro::EspejoVertical, Giro::MediaVuelta] {
+            let mut d = doc("degradado_vuelta.png");
+            d.girar(giro);
+            let desde = Punto { x: 3.0, y: 2.0 };
+            let hasta = Punto { x: 11.0, y: 9.0 };
+            d.poner_degradado(desde, hasta, true);
+            let v = d.degradado_en_la_vista().unwrap();
+            assert!((v.desde.x - desde.x).abs() < 1e-3 && (v.desde.y - desde.y).abs() < 1e-3,
+                "con {giro:?}: {:?} debería ser {desde:?}", v.desde);
+            assert!((v.hasta.x - hasta.x).abs() < 1e-3 && (v.hasta.y - hasta.y).abs() < 1e-3,
+                "con {giro:?}: {:?} debería ser {hasta:?}", v.hasta);
+        }
+    }
+
+    #[test]
+    fn el_degradado_se_queda_sobre_el_mismo_contenido_al_girar() {
+        // Se guarda en coordenadas del original a propósito: giras la foto y
+        // el cielo se lleva su oscurecimiento con él.
+        let mut d = doc("degradado_conmuta.png");
+        d.poner_degradado(Punto { x: 0.0, y: 0.0 }, Punto { x: 0.0, y: 16.0 }, true);
+        d.ajustar_degradado(-2.0, true);
+        let sin_girar = d.completa(Revelado::Actual);
+        d.girar(Giro::Derecha);
+        let girada = d.completa(Revelado::Actual);
+        let esperada =
+            pf_image::orientacion::enderezar(sin_girar, Orientacion::GIRO_DERECHA).unwrap();
+        assert_eq!(girada.dim(), esperada.dim());
+        assert_eq!(girada.datos(), esperada.datos());
+    }
+
+    #[test]
+    fn un_arrastre_entero_deja_un_solo_paso_en_el_historial() {
+        // Antes, mover un deslizador dejaba un paso por cada posición
+        // intermedia y deshacer te los hacía desandar de uno en uno.
+        let mut d = doc("un_solo_paso.png");
+        for i in 1..=30 {
+            d.ajustar(Operacion::Contraste { cantidad: i as f32 }, false);
+        }
+        d.ajustar(Operacion::Contraste { cantidad: 30.0 }, true);
+        assert!(d.puede_deshacer());
+        assert!(d.deshacer());
+        assert!(
+            !d.puede_deshacer(),
+            "el arrastre entero tenía que ser un solo paso"
+        );
+        assert!(d.operaciones().is_empty());
+    }
+
+    #[test]
     fn exportar_lo_revelado_da_un_archivo_distinto_del_original() {
         let d = {
             let mut d = doc("exportado.png");
-            d.ajustar(Operacion::Exposicion { pasos: 1.0 });
+            d.ajustar(Operacion::Exposicion { pasos: 1.0 }, true);
             d
         };
         let revelada = d.completa(Revelado::Actual);

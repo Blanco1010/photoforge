@@ -24,6 +24,20 @@ export type ClaseCantidad = "luces" | "sombras" | "blancos" | "negros" | "contra
 /** De dónde vienen los píxeles: un RAW sin interpretar o un archivo ya revelado. */
 export type Procedencia = "revelada" | "escena";
 
+/** Un punto de la foto, en píxeles de la imagen COMO SE VE. */
+export interface Punto {
+  x: number;
+  y: number;
+}
+
+/** El degradado, en coordenadas de la foto como se ve. */
+export interface Degradado {
+  desde: Punto;
+  hasta: Punto;
+  /** Pasos de exposición dentro de la franja. */
+  pasos: number;
+}
+
 /** Los cinco gestos del menú Imagen, más la vuelta atrás. */
 export type Giro =
   | "derecha"
@@ -62,6 +76,8 @@ export interface Ficha {
   puede_deshacer: boolean;
   puede_rehacer: boolean;
   hay_cambios: boolean;
+  /** El degradado puesto, ya en coordenadas de la foto como se ve. */
+  degradado: Degradado | null;
   /** Cómo está girada, en castellano, o `null` si está como venía. */
   giro: string | null;
 }
@@ -96,7 +112,13 @@ export const api = {
   abrir: (ruta: string) => invoke<Ficha>("abrir", { ruta }),
   cerrar: () => invoke<void>("cerrar"),
   ficha: () => invoke<Ficha>("ficha"),
-  ajustar: (operacion: Operacion) => invoke<Ficha>("ajustar", { operacion }),
+  ajustar: (operacion: Operacion, definitivo: boolean) =>
+    invoke<Ficha>("ajustar", { operacion, definitivo }),
+  ponerDegradado: (desde: Punto, hasta: Punto, definitivo: boolean) =>
+    invoke<Ficha>("poner_degradado", { desde, hasta, definitivo }),
+  ajustarDegradado: (pasos: number, definitivo: boolean) =>
+    invoke<Ficha>("ajustar_degradado", { pasos, definitivo }),
+  quitarDegradado: () => invoke<Ficha>("quitar_degradado"),
   girar: (giro: Giro) => invoke<Ficha>("girar", { giro }),
   restablecer: () => invoke<Ficha>("restablecer"),
   deshacer: () => invoke<Ficha>("deshacer"),

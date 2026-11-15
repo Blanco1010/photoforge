@@ -28,10 +28,12 @@
 //!
 //! Es deuda de legibilidad real, y se reconoce.
 
+use pf_core::{Dimensiones, Region};
+use pf_image::orientacion::{self, Orientacion};
 use pf_image::{CANALES, Imagen, color};
 use rayon::prelude::*;
 
-use crate::{Operacion, operacion};
+use crate::{Degradado, Operacion, operacion};
 
 /// Escalones de las tablas. El mismo número y el mismo motivo que en
 /// `pf_image::color`: por debajo de un nivel de 8 bits no hay banda que ver.
@@ -39,6 +41,84 @@ const ESCALONES: usize = 4096;
 
 /// Una curva escalar tabulada sobre la entrada 0..=1.
 type Tabla = [f32; ESCALONES + 1];
+
+/// Cómo se llega del píxel de destino al píxel del original.
+///
+/// # Por qué esto existe
+///
+/// `Plan::ejecutar` recibe una imagen ya muestreada y, hasta ahora, no
+/// necesitaba saber de qué trozo de la foto venía: las nueve operaciones son
+/// funciones del VALOR del píxel y de nada más. El degradado es la primera
+/// que depende de DÓNDE está, así que alguien tiene que contárselo.
+///
+/// Lo construye `Documento`, que es lo único que conoce a la vez la región,
+/// el destino y el giro, y lo recibe `Plan::desde`, que lo pliega en tres
+/// flotantes antes de tocar un píxel. `ejecutar` no hace geometría: eso es
+/// la tesis de este archivo —la lista se resuelve entera primero— y además
+/// es lo que impide que dos de los tres caminos de revelado transformen y el
+/// tercero se olvide.
+///
+/// Son seis coeficientes porque la composición de «recortar y escalar» con
+/// «girar» es afín y alineada con los ejes, y las cuatro orientaciones que
+/// trasponen hacen que la x del original dependa de la y del destino.
+#[derive(Debug, Clone, Copy)]
+pub struct Encuadre {
+    pub ax: f32,
+    pub bx: f32,
+    pub cx: f32,
+    pub ay: f32,
+    pub by: f32,
+    pub cy: f32,
+}
+
+impl Encuadre {
+    /// El encuadre de un muestreo con su giro.
+    pub fn nuevo(
+        region: Region,
+        destino: Dimensiones,
+        giro: Orientacion,
+        original: Dimensiones,
+    ) -> Self {
+        let ex = region.ancho / destino.ancho as f32;
+        let ey = region.alto / destino.alto as f32;
+        let [ax, bx, cx, ay, by, cy] = orientacion::afin_a_origen(
+            giro.pasos_publicos(),
+            original.ancho as i64,
+            original.alto as i64,
+        );
+        // El píxel de destino (dx, dy) se muestrea en el centro de su celda.
+        let (u0, v0) = (region.x + 0.5 * ex, region.y + 0.5 * ey);
+        Encuadre {
+            ax: ax * ex,
+            bx: bx * ey,
+            cx: ax * u0 + bx * v0 + cx,
+            ay: ay * ex,
+            by: by * ey,
+            cy: ay * u0 + by * v0 + cy,
+        }
+    }
+
+    /// La foto entera a su tamaño y sin girar, que es el caso de la
+    /// exportación y de los dos histogramas. Tiene nombre para que se lea
+    /// como lo que es y no como seis números sueltos.
+    pub fn completa(_dim: Dimensiones) -> Self {
+        Encuadre { ax: 1.0, bx: 0.0, cx: 0.5, ay: 0.0, by: 1.0, cy: 0.5 }
+    }
+}
+
+/// El degradado, ya plegado contra el encuadre.
+struct Local {
+    /// `t(dx, dy) = alfa·dx + beta·dy + gamma`, de 0 en el borde entero a 1
+    /// en el borde donde se acaba.
+    alfa: f32,
+    beta: f32,
+    gamma: f32,
+    /// `2^(pasos · suave(t))`, tabulada sobre t de 0 a 1.
+    rampa: Box<Tabla>,
+    /// El factor con el efecto entero, para `t <= 0`: o sea, del borde donde
+    /// se pulsó hacia fuera.
+    pleno: f32,
+}
 
 /// Todo lo que hay que hacerle a un píxel, ya resuelto.
 ///
@@ -54,6 +134,8 @@ pub(crate) struct Plan {
     k: f32,
     /// La curva de contraste, tabulada. `None` si el contraste es neutro.
     contraste: Option<Box<Tabla>>,
+    /// El degradado, si lo hay.
+    local: Option<Local>,
     /// Los cuatro controles tonales, de -1 a 1. Cero es neutro.
     tonal: [f32; 4],
     /// Los cuatro compuestos en una sola curva de luminancia, tabulada.
@@ -112,7 +194,11 @@ impl Plan {
     /// acordarse de mantener; aquí pasa a ser estructural, porque la fusión
     /// necesita saber qué va antes de qué. El día que un `.pforge` traiga una
     /// lista leída de un archivo, llegará ordenada sin que nadie se acuerde.
-    pub(crate) fn desde(operaciones: &[Operacion]) -> Self {
+    pub(crate) fn desde(
+        operaciones: &[Operacion],
+        degradado: Option<Degradado>,
+        encuadre: Encuadre,
+    ) -> Self {
         let mut ordenadas: Vec<Operacion> = operaciones.to_vec();
         ordenadas.sort_by_key(|o| o.orden());
 
@@ -121,6 +207,7 @@ impl Plan {
             curva: false,
             k: 1.0,
             contraste: None,
+            local: None,
             tonal: [0.0; 4],
             tabla_tonal: None,
         };
@@ -139,6 +226,44 @@ impl Plan {
                 Operacion::Luces { cantidad } => plan.tonal[1] = cantidad.clamp(-100.0, 100.0) / 100.0,
                 Operacion::Negros { cantidad } => plan.tonal[2] = cantidad.clamp(-100.0, 100.0) / 100.0,
                 Operacion::Blancos { cantidad } => plan.tonal[3] = cantidad.clamp(-100.0, 100.0) / 100.0,
+            }
+        }
+
+        // El degradado se pliega contra el encuadre: de la geometría en
+        // coordenadas del original salen tres flotantes que el bucle usa con
+        // una multiplicación y una suma por píxel.
+        if let Some(d) = degradado.filter(|d| d.pasos != 0.0) {
+            let (dx, dy) = (d.hasta.x - d.desde.x, d.hasta.y - d.desde.y);
+            let dd = dx * dx + dy * dy;
+            // Un degradado de longitud cero no tiene dirección y no se puede
+            // evaluar. No debería llegar —la interfaz exige un arrastre
+            // mínimo—, pero una división por cero aquí pintaría la foto de
+            // NaN entera.
+            if dd > 1e-6 {
+                let e = encuadre;
+                let mut rampa = Box::new([0.0f32; ESCALONES + 1]);
+                for (i, v) in rampa.iter_mut().enumerate() {
+                    let t = i as f32 / ESCALONES as f32;
+                    // `t` vale 0 en `desde` y 1 en `hasta`, y el efecto va al
+                    // revés: entero donde se pulsó y nulo donde se soltó. De
+                    // ahí el `1 -`, que es el sentido del gesto y no un
+                    // detalle: sin él, arrastrar sobre el cielo oscurecería
+                    // el suelo.
+                    //
+                    // Se interpola en PASOS y no en el factor. Con -6 EV,
+                    // interpolar el factor dejaría el 94 % del oscurecimiento
+                    // en el último quinto de la franja: una raya visible
+                    // justo en el cielo, que es lo que `suave` existe para
+                    // evitar.
+                    *v = (d.pasos * (1.0 - color::suave(t))).exp2();
+                }
+                plan.local = Some(Local {
+                    alfa: (e.ax * dx + e.ay * dy) / dd,
+                    beta: (e.bx * dx + e.by * dy) / dd,
+                    gamma: ((e.cx - d.desde.x) * dx + (e.cy - d.desde.y) * dy) / dd,
+                    rampa,
+                    pleno: d.pasos.exp2(),
+                });
             }
         }
 
@@ -169,7 +294,14 @@ impl Plan {
 
     /// ¿Esta lista deja la imagen como estaba?
     pub(crate) fn es_identidad(&self) -> bool {
-        self.factor == 1.0 && !self.curva && self.k == 1.0 && self.tabla_tonal.is_none()
+        // El degradado cuenta: sin esto, abrir un JPEG y dibujar una franja
+        // no cambiaría un píxel, porque los demás campos siguen neutros y la
+        // pasada entera se saltaría.
+        self.factor == 1.0
+            && !self.curva
+            && self.k == 1.0
+            && self.tabla_tonal.is_none()
+            && self.local.is_none()
     }
 
     pub(crate) fn ejecutar(&self, img: &mut Imagen) {
@@ -182,18 +314,51 @@ impl Plan {
         let contraste = self.contraste.as_deref();
         let tabla_tonal = self.tabla_tonal.as_deref();
         let tonal = self.tonal;
+        let local = self.local.as_ref();
 
-        // El tamaño del trozo es múltiplo de CANALES a propósito: el bloque
-        // tonal mira al píxel ENTERO para sacar su luminancia, y un trozo que
-        // partiera un píxel por la mitad pintaría franjas de color en los
-        // bordes de cada reparto.
+        // El reparto es por FILAS enteras, y no por trozos de tamaño fijo.
+        //
+        // Dos motivos. Uno ya valía antes: el bloque tonal mira al píxel
+        // entero para sacar su luminancia, y un trozo que partiera un píxel
+        // por la mitad pintaría franjas de color en los bordes de cada
+        // reparto. El otro es el que obliga: el degradado necesita saber EN
+        // QUÉ FILA está, y con trozos de tamaño arbitrario no hay forma de
+        // saberlo sin dividir. Con una fila por trozo, el índice lo da
+        // `enumerate` y no cuesta nada.
+        //
+        // El ancho se lee ANTES de pedir los datos, porque `datos_mut` toma
+        // prestada la imagen entera.
+        let ancho = img.ancho() as usize;
         img.datos_mut()
-            .par_chunks_mut(CANALES * 1024)
-            .for_each(|trozo| {
-                for px in trozo.as_chunks_mut::<CANALES>().0 {
+            .par_chunks_mut(ancho * CANALES)
+            .enumerate()
+            .for_each(|(dy, fila)| {
+                // El arranque de la fila: una multiplicación y una suma
+                // FUERA del bucle de píxeles. Cada fila lo saca de su propio
+                // índice, así que no hay dependencia entre filas y rayon las
+                // reparte igual que antes; una acumulación que cruzara filas
+                // serializaría la pasada entera.
+                let t0 = local.map(|l| l.beta * dy as f32 + l.gamma);
+
+                for (dx, px) in fila.as_chunks_mut::<CANALES>().0.iter_mut().enumerate() {
                     // 1 y 2. Exposición y curva de luces: canal a canal.
+                    //
+                    // El degradado se mete AQUÍ, multiplicando el mismo
+                    // factor: es una exposición que varía en el espacio, que
+                    // es literalmente lo que hace un cristal degradado. Al ir
+                    // antes de la curva de luces, oscurecer un cielo quemado
+                    // puede devolverle detalle.
+                    let mut luz = factor;
+                    if let (Some(l), Some(t0)) = (local, t0) {
+                        let t = l.alfa * dx as f32 + t0;
+                        // Más allá de `hasta` no hay efecto, así que ni se
+                        // lee la tabla; antes de `desde` el efecto es entero.
+                        if t < 1.0 {
+                            luz *= if t <= 0.0 { l.pleno } else { interpolar(&l.rampa, t) };
+                        }
+                    }
                     for v in px.iter_mut() {
-                        let mut x = *v * factor;
+                        let mut x = *v * luz;
                         if curva {
                             x = color::doblar_luces(x);
                         }
@@ -367,7 +532,7 @@ mod pruebas {
 
         for ops in &combinaciones {
             let mut fusionada = imagen(&muestras);
-            Plan::desde(ops).ejecutar(&mut fusionada);
+            Plan::desde(ops, None, Encuadre::completa(fusionada.dim())).ejecutar(&mut fusionada);
 
             let mut referencia = imagen(&muestras);
             una_a_una(ops, &mut referencia);
@@ -391,7 +556,7 @@ mod pruebas {
         // puede distinguir un byte, no se ve.
         let tabla_salida = color::tabla_salida();
         for cantidad in [-100.0f32, -50.0, 25.0, 60.0, 100.0] {
-            let plan = Plan::desde(&[Operacion::Contraste { cantidad }]);
+            let plan = Plan::desde(&[Operacion::Contraste { cantidad }], None, Encuadre::completa(Dimensiones::nueva(1, 1).unwrap()));
             let t = plan.contraste.as_deref().expect("debería haber tabla");
             let mut peor = 0i32;
             for i in 0..=20_000 {
@@ -413,7 +578,7 @@ mod pruebas {
         // color saturado se iría hacia el pastel.
         let dim = Dimensiones::nueva(1, 1).unwrap();
         let mut img = Imagen::nueva(dim, vec![0.30, 0.12, 0.05]).unwrap();
-        Plan::desde(&[Operacion::Sombras { cantidad: 80.0 }]).ejecutar(&mut img);
+        Plan::desde(&[Operacion::Sombras { cantidad: 80.0 }], None, Encuadre::completa(Dimensiones::nueva(1, 1).unwrap())).ejecutar(&mut img);
         let d = img.datos();
         assert!((d[0] / d[1] - 0.30 / 0.12).abs() < 1e-4, "el tono se movió");
         assert!((d[1] / d[2] - 0.12 / 0.05).abs() < 1e-4, "el tono se movió");
@@ -428,7 +593,7 @@ mod pruebas {
         // color muy saturado que ya rozaba el blanco sí puede cruzarlo.
         let dim = Dimensiones::nueva(1, 1).unwrap();
         let mut img = Imagen::nueva(dim, vec![0.95, 0.40, 0.10]).unwrap();
-        Plan::desde(&[Operacion::Luces { cantidad: 100.0 }]).ejecutar(&mut img);
+        Plan::desde(&[Operacion::Luces { cantidad: 100.0 }], None, Encuadre::completa(Dimensiones::nueva(1, 1).unwrap())).ejecutar(&mut img);
         assert!(img.datos()[0] > 1.0, "se esperaba que el rojo cruzara el blanco");
     }
 
@@ -445,7 +610,7 @@ mod pruebas {
                 Operacion::Blancos { cantidad },
             ] {
                 let mut img = imagen(&valores);
-                Plan::desde(&[op]).ejecutar(&mut img);
+                Plan::desde(&[op], None, Encuadre::completa(Dimensiones::nueva(1, 1).unwrap())).ejecutar(&mut img);
                 for v in img.datos() {
                     assert!(*v >= 0.0, "{op:?} dejó {v}");
                 }
@@ -462,7 +627,7 @@ mod pruebas {
             Operacion::Luces { cantidad: 0.0 },
             Operacion::Negros { cantidad: 0.0 },
             Operacion::Blancos { cantidad: 0.0 },
-        ]);
+        ], None, Encuadre::completa(Dimensiones::nueva(1, 1).unwrap()));
         assert!(plan.es_identidad());
 
         let partida = imagen(&[0.1, 0.5, 0.9]);
@@ -486,16 +651,23 @@ mod pruebas {
         ];
         let mut a = imagen(&[0.05, 0.2, 0.6, 0.95]);
         let mut b = imagen(&[0.05, 0.2, 0.6, 0.95]);
-        Plan::desde(&alreves).ejecutar(&mut a);
-        Plan::desde(&derecha).ejecutar(&mut b);
+        Plan::desde(&alreves, None, Encuadre::completa(Dimensiones::nueva(1, 1).unwrap())).ejecutar(&mut a);
+        Plan::desde(&derecha, None, Encuadre::completa(Dimensiones::nueva(1, 1).unwrap())).ejecutar(&mut b);
         assert_eq!(canal(&a), canal(&b));
     }
 
     #[test]
-    fn los_trozos_del_reparto_no_parten_pixeles() {
-        // Vigila la línea `par_chunks_mut(CANALES * 1024)`. Con un tamaño que
-        // no sea múltiplo de CANALES, la primera operación que mire al píxel
-        // entero pintará franjas de color en los bordes de cada trozo.
-        assert_eq!((CANALES * 1024) % CANALES, 0);
+    fn el_reparto_da_exactamente_un_trozo_por_fila() {
+        // Lo que vigila esta prueba es que el reparto siga siendo por filas:
+        // de ahí sale el índice de la fila que necesita el degradado, y
+        // además impide que un trozo parta un píxel por la mitad.
+        let dim = Dimensiones::nueva(7, 5).unwrap();
+        let img = Imagen::negra(dim);
+        let ancho = img.ancho() as usize;
+        let trozos: Vec<&[f32]> = img.datos().chunks(ancho * CANALES).collect();
+        assert_eq!(trozos.len(), dim.alto as usize);
+        for t in trozos {
+            assert_eq!(t.len(), ancho * CANALES);
+        }
     }
 }
