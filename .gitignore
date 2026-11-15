@@ -1,0 +1,38 @@
+# Dependencias y compilados
+node_modules
+dist
+dist-ssr
+target
+*.local
+
+# Logs
+logs
+*.log
+npm-debug.log*
+
+# Archivos a medio escribir que deja la exportación si se corta
+*.pf-parcial
+
+# Fotos de prueba. No se suben: pesan decenas de megas y son del autor.
+# Las cifras que salen de ellas sí están en el README; los archivos, no.
+/fotos-de-prueba/
+*.dng
+*.cr2
+*.cr3
+*.nef
+*.arw
+
+# Herramientas de desarrollo: lo que hay hoy es inofensivo, pero esta carpeta
+# acumula configuración local sin que nadie la mire.
+.claude/
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Un diafragma: seis hojas alrededor de un centro. Es el símbolo que
+       cualquiera que haga fotos reconoce sin leer nada. -->
+  <rect width="512" height="512" rx="96" fill="#1c1c1c"/>
+  <g transform="translate(256 256)">
+    <circle r="150" fill="none" stroke="#3a3a3a" stroke-width="18"/>
+    <g fill="#5c9eff">
+      <path d="M0 -132 L114 -66 L76 -44 L-38 -110 Z" opacity="0.95"/>
+      <path d="M114 -66 L114 66 L76 44 L76 -88 Z" opacity="0.8"/>
+      <path d="M114 66 L0 132 L-38 110 L76 44 Z" opacity="0.95"/>
+      <path d="M0 132 L-114 66 L-76 44 L38 110 Z" opacity="0.8"/>
+      <path d="M-114 66 L-114 -66 L-76 -44 L-76 88 Z" opacity="0.95"/>
+      <path d="M-114 -66 L0 -132 L38 -110 L-76 -44 Z" opacity="0.8"/>
+    </g>
+    <circle r="46" fill="#767676"/>
+  </g>
+</svg>

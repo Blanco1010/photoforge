@@ -1,0 +1,421 @@
+/** Estilos de PhotoForge. Los colores salen todos de theme.css. */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--fondo-base);
+  color: var(--texto);
+  font-family: var(--fuente);
+  font-size: 13px;
+  /* El usuario no puede seleccionar texto de la interfaz por accidente al
+     arrastrar sobre el lienzo; sí puede en los metadatos, que es donde tiene
+     sentido copiar algo. */
+  user-select: none;
+  overflow: hidden;
+}
+
+#app {
+  display: grid;
+  grid-template-rows: var(--barra) 1fr var(--estado);
+}
+
+/* ---------- Barra ---------- */
+
+.barra {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 0 14px;
+  background: var(--fondo-panel);
+  border-bottom: 1px solid var(--borde);
+}
+
+.barra__identidad {
+  display: flex;
+  flex-direction: column;
+  min-width: 180px;
+  max-width: 280px;
+  margin-right: 6px;
+}
+
+.barra__titulo {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.barra__subtitulo {
+  color: var(--texto-tenue);
+  font-size: 11px;
+}
+
+.barra__grupo {
+  display: flex;
+  gap: 6px;
+}
+
+.barra__grupo--final {
+  margin-left: auto;
+}
+
+.boton {
+  height: var(--alto-control);
+  padding: 0 12px;
+  background: var(--fondo-elevado);
+  color: var(--texto);
+  border: 1px solid var(--borde);
+  border-radius: var(--radio-chico);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background var(--transicion), border-color var(--transicion);
+}
+
+.boton:hover:not(:disabled) {
+  background: var(--fondo-hover);
+  border-color: var(--borde-fuerte);
+}
+
+.boton:disabled {
+  opacity: 0.38;
+  cursor: default;
+}
+
+.boton--principal {
+  background: var(--acento);
+  color: var(--texto-sobre-acento);
+  border-color: transparent;
+  font-weight: 600;
+}
+
+.boton--principal:hover:not(:disabled) {
+  background: var(--acento-hover);
+}
+
+.boton--activo {
+  background: var(--acento-tenue);
+  border-color: var(--acento);
+}
+
+.boton--comparar {
+  min-width: 64px;
+}
+
+/* ---------- Cuerpo ---------- */
+
+.cuerpo {
+  display: grid;
+  grid-template-columns: 1fr var(--panel-ancho);
+  min-height: 0;
+}
+
+.area {
+  position: relative;
+  min-width: 0;
+  background: var(--fondo-lienzo);
+  /* Un tablero de ajedrez muy tenue detrás de la foto: deja claro dónde
+     acaba la imagen y dónde empieza el lienzo, sin competir con ella. */
+  background-image:
+    linear-gradient(45deg, rgba(0, 0, 0, 0.05) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(0, 0, 0, 0.05) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(0, 0, 0, 0.05) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(0, 0, 0, 0.05) 75%);
+  background-size: 24px 24px;
+  background-position: 0 0, 0 12px, 12px -12px, -12px 0;
+}
+
+.lienzo {
+  position: absolute;
+  inset: 0;
+}
+
+.lienzo__canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+  touch-action: none;
+}
+
+.lienzo__canvas--agarrando {
+  cursor: grabbing;
+}
+
+.vacio {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: var(--fondo-base);
+  color: var(--texto-suave);
+}
+
+.vacio[hidden] {
+  display: none;
+}
+
+.vacio__titulo {
+  margin: 0;
+  font-size: 16px;
+  color: var(--texto);
+}
+
+.vacio__ayuda {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--texto-tenue);
+}
+
+/* ---------- Panel ---------- */
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  background: var(--fondo-panel);
+  border-left: 1px solid var(--borde);
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.panel__seccion {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--borde-suave);
+}
+
+.panel__seccion--crece {
+  flex: 1;
+  min-height: 0;
+  border-bottom: none;
+}
+
+.panel__titulo {
+  margin: 0 0 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--texto-tenue);
+}
+
+/* ---------- Histograma ---------- */
+
+.histograma {
+  height: 110px;
+  background: #141414;
+  border: 1px solid var(--borde);
+  border-radius: var(--radio-chico);
+  overflow: hidden;
+}
+
+.histograma__lienzo {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.histograma__aviso {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--texto-tenue);
+  font-variant-numeric: tabular-nums;
+}
+
+.histograma__aviso--atencion {
+  color: var(--aviso);
+}
+
+/* ---------- Deslizadores ---------- */
+
+.deslizador + .deslizador {
+  margin-top: 14px;
+}
+
+.deslizador__cabecera {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.deslizador__etiqueta {
+  flex: 1;
+  font-size: 12px;
+}
+
+.deslizador__lectura {
+  font-family: var(--fuente-mono);
+  font-size: 11px;
+  color: var(--texto-suave);
+  font-variant-numeric: tabular-nums;
+}
+
+.deslizador__cero {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  background: transparent;
+  color: var(--texto-tenue);
+  border: 1px solid var(--borde);
+  border-radius: var(--radio-chico);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.deslizador__cero:hover:not(:disabled) {
+  color: var(--texto);
+  border-color: var(--borde-fuerte);
+}
+
+.deslizador__cero:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.deslizador__rango {
+  width: 100%;
+  height: 18px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+  appearance: none;
+}
+
+.deslizador__rango::-webkit-slider-runnable-track {
+  height: 3px;
+  background: var(--borde-fuerte);
+  border-radius: 2px;
+}
+
+.deslizador__rango::-webkit-slider-thumb {
+  appearance: none;
+  width: 13px;
+  height: 13px;
+  margin-top: -5px;
+  background: var(--texto);
+  border-radius: 50%;
+  border: none;
+}
+
+.deslizador__rango:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.deslizador__rango:disabled::-webkit-slider-thumb {
+  background: var(--texto-tenue);
+}
+
+/* ---------- Metadatos ---------- */
+
+.metadatos__resumen {
+  display: grid;
+  grid-template-columns: 88px 1fr;
+  gap: 3px 8px;
+  margin: 0;
+  font-size: 11.5px;
+  user-select: text;
+}
+
+.metadatos__resumen dt {
+  color: var(--texto-tenue);
+}
+
+.metadatos__resumen dd {
+  margin: 0;
+  color: var(--texto);
+  overflow-wrap: anywhere;
+}
+
+.metadatos__vacio {
+  color: var(--texto-tenue);
+  font-style: italic;
+}
+
+.metadatos__detalle {
+  margin-top: 12px;
+  font-size: 11px;
+}
+
+.metadatos__detalle summary {
+  color: var(--texto-suave);
+  cursor: pointer;
+}
+
+.metadatos__lista {
+  margin-top: 8px;
+  max-height: 260px;
+  overflow-y: auto;
+  user-select: text;
+}
+
+.metadatos__campo {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 8px;
+  padding: 2px 0;
+  border-bottom: 1px solid var(--borde-suave);
+}
+
+.metadatos__clave {
+  color: var(--texto-tenue);
+  overflow-wrap: anywhere;
+}
+
+.metadatos__valor {
+  color: var(--texto-suave);
+  overflow-wrap: anywhere;
+}
+
+/* ---------- Estado ---------- */
+
+.estado {
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
+  background: var(--fondo-panel);
+  border-top: 1px solid var(--borde);
+  color: var(--texto-tenue);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.estado__error {
+  color: var(--peligro);
+}
+
+/* La barra de desplazamiento, para que no sea la blanca de Windows sobre un
+   panel oscuro. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--borde-fuerte);
+  border-radius: 5px;
+  border: 2px solid var(--fondo-panel);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--texto-tenue);
+}

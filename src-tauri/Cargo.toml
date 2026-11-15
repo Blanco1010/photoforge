@@ -1,0 +1,41 @@
+[package]
+name = "photoforge"
+description = "Editor de fotografía profesional y no destructivo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+keywords = ["photo", "editor", "raw", "tauri", "imaging"]
+categories = ["multimedia::images", "gui"]
+
+[lib]
+# El sufijo `_lib` parece redundante pero hace falta: en Windows, la
+# biblioteca y el binario no pueden llamarse igual.
+# https://github.com/rust-lang/cargo/issues/8519
+name = "photoforge_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+pf-core = { workspace = true }
+pf-image = { workspace = true }
+pf-document = { workspace = true }
+
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { workspace = true }
+serde_json = "1"
+# Por qué parking_lot y no el Mutex de la biblioteca estándar: el documento se
+# bloquea en cada repintado, o sea varias veces por segundo mientras se
+# arrastra un deslizador. El de parking_lot no devuelve `LockResult`, así que
+# no hay un `.unwrap()` por envenenamiento en cada llamada, y es más rápido
+# cuando no hay contención, que es el caso normal aquí.
+parking_lot = "0.13.0"
+
+[dev-dependencies]
+# Solo para que la prueba de integración pueda fabricar un PNG de verdad.
+image = { workspace = true }

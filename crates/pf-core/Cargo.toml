@@ -1,0 +1,17 @@
+[package]
+name = "pf-core"
+description = "Vocabulario común de PhotoForge: errores y tipos que todas las demás cajas comparten"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# Solo para comprobar en una prueba que el error cruza el puente como texto.
+serde_json = "1"

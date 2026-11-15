@@ -1,0 +1,61 @@
+# Espacio de trabajo de PhotoForge.
+#
+# Por qué un workspace y no una sola caja: la aplicación de Tauri tiene que
+# compilarse como cdylib para que la ventana la cargue, y eso contagia a todo
+# lo que viva dentro. Sacando el núcleo a cajas aparte, `pf-core`, `pf-image` y
+# `pf-document` compilan y se prueban SIN Tauri, sin WebView2 y sin ventana:
+# `cargo test -p pf-image` tarda segundos en vez de minutos.
+#
+# Por qué solo tres cajas y no las veinte del plan: una caja es un sitio más
+# donde buscar. Se parten cuando duela —cuando dos de ellas tiren de lo mismo
+# o cuando una tarde demasiado en compilar—, no antes.
+[workspace]
+members = ["crates/pf-core", "crates/pf-image", "crates/pf-document", "src-tauri"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["Juan Camilo <camilo3198@gmail.com>"]
+repository = "https://github.com/Blanco1010/photoforge"
+
+# El mínimo real lo marca `rawler 0.8`, que declara 1.89. Se sube a 1.95 porque
+# es lo que ya pide la edición 2024 con el resolver 3 en este equipo y porque
+# un número declarado da el error bueno («requires rustc X») en vez de un fallo
+# de resolución que no menciona a este proyecto.
+rust-version = "1.89"
+
+[workspace.dependencies]
+pf-core = { path = "crates/pf-core" }
+pf-image = { path = "crates/pf-image" }
+pf-document = { path = "crates/pf-document" }
+
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "tiff"] }
+kamadak-exif = "0.6.2"
+rayon = "1.12.0"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2.0.21"
+
+# Perfil de publicación. Mismo criterio que en DiskScope: el binario se
+# descarga una vez y se ejecuta muchas, así que vale la pena pagar en tiempo de
+# compilación lo que se gana en tamaño y velocidad.
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true
+
+# El revelado de una foto de 50 Mpx en modo depuración es inusable: Rust sin
+# optimizar hace el bucle de píxeles entre 30 y 100 veces más lento. Esto
+# optimiza SOLO las dependencias y las cajas del núcleo, dejando el código de
+# la aplicación sin optimizar para que el depurador siga sirviendo.
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.dev.package.pf-image]
+opt-level = 3
+
+[profile.dev.package.pf-document]
+opt-level = 3

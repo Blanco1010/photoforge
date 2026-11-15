@@ -1,0 +1,61 @@
+/**
+ * Tema de PhotoForge.
+ *
+ * # Por qué todo es gris y no hay tema claro
+ *
+ * Esto no es una preferencia estética: en un editor de fotografía, la
+ * interfaz es el fondo contra el que el ojo juzga el color de la foto. Un
+ * panel azulado hace que la foto parezca cálida, y un fondo claro hace que
+ * parezca oscura: el ojo se adapta a lo que más superficie ocupa. Por eso
+ * todos los grises de aquí son NEUTROS —R, G y B valen lo mismo en cada
+ * uno— y por eso el gris que rodea al lienzo es medio y no negro: el negro
+ * engaña sobre el contraste.
+ *
+ * El único color de la interfaz es el acento, y está reservado a los
+ * controles. En cuanto el color se usa para decorar, deja de poder usarse
+ * para señalar.
+ */
+
+:root {
+  /* Grises neutros, del más hondo al más claro. */
+  --fondo-base: #1c1c1c;
+  --fondo-panel: #242424;
+  --fondo-elevado: #2d2d2d;
+  --fondo-hover: #383838;
+  --fondo-activo: #454545;
+
+  /*
+   * El gris que rodea a la foto. 18 % de reflectancia, que es el gris medio
+   * fotográfico: el mismo que tiene una carta gris y el fondo contra el que
+   * se juzga una copia. En sRGB son 118 de 255, o sea #767676.
+   */
+  --fondo-lienzo: #767676;
+
+  --texto: #e8e8e8;
+  --texto-suave: #a8a8a8;
+  --texto-tenue: #777777;
+
+  --borde: #3a3a3a;
+  --borde-suave: #2f2f2f;
+  --borde-fuerte: #4d4d4d;
+
+  --acento: #5c9eff;
+  --acento-hover: #7fb3ff;
+  --acento-tenue: rgba(92, 158, 255, 0.16);
+  --texto-sobre-acento: #10161f;
+
+  --aviso: #f0b242;
+  --peligro: #f06a60;
+
+  --radio: 8px;
+  --radio-chico: 5px;
+  --barra: 56px;
+  --estado: 28px;
+  --panel-ancho: 300px;
+  --alto-control: 30px;
+
+  --fuente: "Segoe UI", system-ui, -apple-system, sans-serif;
+  --fuente-mono: "Cascadia Code", "Consolas", ui-monospace, monospace;
+
+  --transicion: 120ms ease;
+}

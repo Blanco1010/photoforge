@@ -1,0 +1,21 @@
+[package]
+name = "pf-document"
+description = "El documento no destructivo de PhotoForge: el original intacto más la lista de operaciones"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+pf-core = { workspace = true }
+pf-image = { workspace = true }
+rayon = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+# Solo para que las pruebas puedan fabricar un PNG de verdad en disco. Las
+# pruebas de un documento no destructivo tienen que partir de un archivo real:
+# construir la `Imagen` a mano se saltaría justo el camino que puede romperse.
+image = { workspace = true }
